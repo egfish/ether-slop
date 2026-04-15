@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ARCOS // Performer Monitor</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:     #06060a;
+      --bg2:    #0c0c14;
+      --tts:    #00ffc8;
+      --mic:    #ff7043;
+      --dim:    #1e1e2a;
+      --mid:    #44445a;
+      --bright: #b0b0c4;
+      --font:   'Space Mono', monospace;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--bright);
+      font-family: var(--font);
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      padding: 28px 24px 32px;
+      gap: 24px;
+    }
+
+    /* ─── HEADER ─────────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--dim);
+      padding-bottom: 16px;
+    }
+
+    .logo {
+      font-size: 0.62rem;
+      letter-spacing: 0.4em;
+      color: var(--mid);
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+
+    .logo span { color: var(--tts); }
+
+    .peer-id {
+      font-size: 0.55rem;
+      letter-spacing: 0.15em;
+      color: var(--dim);
+    }
+
+    .peer-id strong { color: var(--mid); }
+
+    /* ─── STATUS BAR ─────────────────────────────────────────────── */
+    #status-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--dim);
+      flex-shrink: 0;
+      transition: background 0.4s;
+    }
+
+    .dot.waiting    { background: var(--dim); }
+    .dot.connected  { background: var(--tts); animation: blink 1.4s ease-in-out infinite; }
+    .dot.error      { background: var(--mic); }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: 0.3; }
+    }
+
+    #status-text {
+      font-size: 0.65rem;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: var(--mid);
+      transition: color 0.4s;
+    }
+
+    #status-text.connected { color: var(--tts); }
+    #status-text.error     { color: var(--mic); }
+
+    #connection-count {
+      margin-left: auto;
+      font-size: 0.55rem;
+      letter-spacing: 0.2em;
+      color: var(--dim);
+    }
+
+    /* ─── WAVEFORM ───────────────────────────────────────────────── */
+    #wave-section {
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 0;
+    }
+
+    #wave-label {
+      font-size: 0.54rem;
+      letter-spacing: 0.35em;
+      text-transform: uppercase;
+      color: var(--dim);
+    }
+
+    #wave-wrap {
+      flex: 1 1 0;
+      min-height: 120px;
+      max-height: 260px;
+      border: 1px solid var(--dim);
+      position: relative;
+      overflow: hidden;
+    }
+
+    #waveform {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    #wave-idle {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.58rem;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: var(--dim);
+    }
+
+    /* ─── CALL LOG ───────────────────────────────────────────────── */
+    #log-section { display: flex; flex-direction: column; gap: 8px; }
+
+    #log-label {
+      font-size: 0.54rem;
+      letter-spacing: 0.35em;
+      text-transform: uppercase;
+      color: var(--dim);
+    }
+
+    #log {
+      background: var(--bg2);
+      border: 1px solid var(--dim);
+      padding: 12px;
+      height: 120px;
+      overflow-y: auto;
+      font-size: 0.6rem;
+      line-height: 1.9;
+      letter-spacing: 0.08em;
+      color: var(--mid);
+    }
+
+    #log::-webkit-scrollbar { width: 4px; }
+    #log::-webkit-scrollbar-track { background: var(--dim); }
+    #log::-webkit-scrollbar-thumb { background: var(--mid); }
+
+    .log-entry { display: flex; gap: 10px; }
+    .log-time  { color: var(--dim); flex-shrink: 0; }
+    .log-msg.connected { color: var(--tts); }
+    .log-msg.ended     { color: var(--mid); }
+    .log-msg.error     { color: var(--mic); }
+
+    /* ─── RECORDING ──────────────────────────────────────────────── */
+    #rec-section {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      padding-top: 4px;
+    }
+
+    .rec-btn {
+      font-family: var(--font);
+      font-size: 0.62rem;
+      letter-spacing: 0.25em;
+      font-weight: 700;
+      text-transform: uppercase;
+      background: transparent;
+      border: 1px solid var(--mid);
+      color: var(--mid);
+      padding: 10px 20px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .rec-btn:hover:not(:disabled) {
+      border-color: var(--bright);
+      color: var(--bright);
+    }
+
+    .rec-btn:disabled { opacity: 0.2; cursor: default; }
+
+    #btn-start-rec.recording {
+      border-color: var(--mic);
+      color: var(--mic);
+      animation: pulse-rec 1.6s ease-in-out infinite;
+    }
+
+    @keyframes pulse-rec {
+      0%, 100% { box-shadow: 0 0 0 0 var(--mic-glow, rgba(255,112,67,.2)); }
+      50%       { box-shadow: 0 0 14px 4px var(--mic-glow, rgba(255,112,67,.2)); }
+    }
+
+    #rec-status {
+      font-size: 0.56rem;
+      letter-spacing: 0.2em;
+      color: var(--dim);
+    }
+
+    #rec-status.active { color: var(--mic); }
+
+    #downloads { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 2px; width: 100%; }
+
+    .dl-link {
+      font-family: var(--font);
+      font-size: 0.56rem;
+      letter-spacing: 0.18em;
+      color: var(--tts);
+      text-decoration: none;
+      border-bottom: 1px solid rgba(0,255,200,0.3);
+      padding-bottom: 1px;
+    }
+    .dl-link:hover { border-color: var(--tts); }
+  </style>
+</head>
+<body>
+
+<!-- ─────────────────────────────────────────────────────────────────
+  CONFIGURATION — session code must match audience.html exactly
+  ───────────────────────────────────────────────────────────────── -->
+<script>
+  const CONFIG = {
+    sessionCode: 'ether-slop-2026',
+  };
+</script>
+
+<!-- ─── HEADER ───────────────────────────────────────────────────── -->
+<header>
+  <div class="logo">ARCOS // <span>Ether Slop</span></div>
+  <div class="peer-id">Peer ID: <strong id="peer-id-display">—</strong></div>
+</header>
+
+<!-- ─── STATUS ───────────────────────────────────────────────────── -->
+<div id="status-bar">
+  <div class="dot waiting" id="dot"></div>
+  <div id="status-text">Waiting for audience</div>
+  <div id="connection-count">Connections: <span id="conn-count">0</span></div>
+</div>
+
+<!-- ─── WAVEFORM ─────────────────────────────────────────────────── -->
+<section id="wave-section">
+  <div id="wave-label">Incoming signal</div>
+  <div id="wave-wrap">
+    <canvas id="waveform"></canvas>
+    <div id="wave-idle">No incoming audio</div>
+  </div>
+</section>
+
+<!-- ─── RECORDING ────────────────────────────────────────────────── -->
+<section id="rec-section">
+  <button class="rec-btn" id="btn-start-rec" disabled>⏺ Record</button>
+  <button class="rec-btn" id="btn-stop-rec" disabled>⏹ Stop</button>
+  <span id="rec-status">—</span>
+  <div id="downloads"></div>
+</section>
+
+<!-- ─── LOG ──────────────────────────────────────────────────────── -->
+<section id="log-section">
+  <div id="log-label">Event log</div>
+  <div id="log"></div>
+</section>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════════════════
+let peer           = null;
+let connCount      = 0;
+let activeStreams   = [];   // MediaStream objects (concurrent calls supported)
+let audioCtxs      = [];   // AudioContexts for visualization
+let analysers      = [];   // AnalyserNodes
+let currentAnalyser = null; // most recent active one
+
+// Recording
+let mediaRecorder   = null;
+let recordedChunks  = [];
+let recordingStream = null;
+let recCount        = 0;
+
+// ═══════════════════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════════════════
+window.addEventListener('DOMContentLoaded', () => {
+  initPeer();
+  drawLoop();
+  setupRecButtons();
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  PEERJS — listen for incoming calls
+// ═══════════════════════════════════════════════════════════════════
+function initPeer() {
+  const performerId = CONFIG.sessionCode + '-performer';
+
+  peer = new Peer(performerId, { debug: 0 });
+
+  peer.on('open', id => {
+    document.getElementById('peer-id-display').textContent = id;
+    log('Server connected. Listening as: ' + id, '');
+  });
+
+  peer.on('call', call => {
+    connCount++;
+    updateConnCount();
+    log('Audience connected', 'connected');
+    setStatus('connected', 'Audience connected');
+
+    // Answer with no outgoing stream — performer only listens
+    call.answer();
+
+    call.on('stream', remoteStream => {
+      attachAudio(remoteStream);
+      attachAnalyser(remoteStream);
+      activeStreams.push(remoteStream);
+      document.getElementById('wave-idle').style.display = 'none';
+
+      // Enable recording if not already running
+      if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+        recordingStream = remoteStream;
+        document.getElementById('btn-start-rec').disabled = false;
+      }
+    });
+
+    call.on('close', () => {
+      connCount = Math.max(0, connCount - 1);
+      updateConnCount();
+      log('Audience disconnected', 'ended');
+
+      if (connCount === 0) {
+        setStatus('waiting', 'Waiting for audience');
+        document.getElementById('wave-idle').style.display = 'flex';
+        currentAnalyser = null;
+        document.getElementById('btn-start-rec').disabled = true;
+
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+          stopRecording();
+        }
+      }
+    });
+
+    call.on('error', err => {
+      log('Call error: ' + err, 'error');
+    });
+  });
+
+  peer.on('error', err => {
+    setStatus('error', 'Error: ' + err.type);
+    log('Peer error: ' + err.type, 'error');
+    document.getElementById('peer-id-display').textContent = 'error — reload page';
+  });
+
+  peer.on('disconnected', () => {
+    log('Disconnected from server. Reconnecting…', 'error');
+    peer.reconnect();
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  AUDIO OUTPUT
+// ═══════════════════════════════════════════════════════════════════
+function attachAudio(stream) {
+  // Play incoming stream through default output (performer's earbuds)
+  const audio = document.createElement('audio');
+  audio.srcObject = stream;
+  audio.autoplay  = true;
+  audio.volume    = 1;
+  document.body.appendChild(audio);
+  audio.play().catch(() => {
+    // Some browsers require user interaction; already happened via page load
+    log('Audio autoplay blocked — click page to activate', 'error');
+  });
+}
+
+function attachAnalyser(stream) {
+  const ctx      = new (window.AudioContext || window.webkitAudioContext)();
+  const source   = ctx.createMediaStreamSource(stream);
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 1024;
+  analyser.smoothingTimeConstant = 0.8;
+  source.connect(analyser);
+
+  audioCtxs.push(ctx);
+  analysers.push(analyser);
+  currentAnalyser = analyser; // always visualize most recent
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  WAVEFORM
+// ═══════════════════════════════════════════════════════════════════
+function drawLoop() {
+  const canvas = document.getElementById('waveform');
+  const ctx    = canvas.getContext('2d');
+
+  function frame() {
+    requestAnimationFrame(frame);
+
+    const w = canvas.offsetWidth;
+    const h = canvas.offsetHeight;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width  = w;
+      canvas.height = h;
+    }
+
+    ctx.clearRect(0, 0, w, h);
+
+    if (!currentAnalyser) return;
+
+    const len  = currentAnalyser.frequencyBinCount;
+    const data = new Uint8Array(len);
+    currentAnalyser.getByteTimeDomainData(data);
+
+    // Glow
+    ctx.save();
+    ctx.filter    = 'blur(4px)';
+    ctx.strokeStyle = 'rgba(255, 112, 67, 0.5)';
+    ctx.lineWidth = 3;
+    drawPath(ctx, data, len, w, h);
+    ctx.restore();
+
+    // Crisp
+    ctx.strokeStyle = '#ff7043';
+    ctx.lineWidth   = 1.8;
+    drawPath(ctx, data, len, w, h);
+
+    // Center reference
+    ctx.strokeStyle = 'rgba(255,112,67,0.05)';
+    ctx.lineWidth   = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, h / 2);
+    ctx.lineTo(w, h / 2);
+    ctx.stroke();
+  }
+
+  frame();
+}
+
+function drawPath(ctx, data, len, w, h) {
+  const sw = w / len;
+  ctx.beginPath();
+  for (let i = 0; i < len; i++) {
+    const v = data[i] / 128.0;
+    const y = (v * h) / 2;
+    const x = i * sw;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  RECORDING
+// ═══════════════════════════════════════════════════════════════════
+function setupRecButtons() {
+  document.getElementById('btn-start-rec').addEventListener('click', startRecording);
+  document.getElementById('btn-stop-rec').addEventListener('click', stopRecording);
+}
+
+function startRecording() {
+  if (!recordingStream) return;
+
+  recordedChunks = [];
+  recCount++;
+
+  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+    ? 'audio/webm;codecs=opus'
+    : MediaRecorder.isTypeSupported('audio/webm')
+    ? 'audio/webm'
+    : 'audio/ogg';
+
+  try {
+    mediaRecorder = new MediaRecorder(recordingStream, { mimeType });
+  } catch (e) {
+    mediaRecorder = new MediaRecorder(recordingStream);
+  }
+
+  mediaRecorder.ondataavailable = e => {
+    if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+  };
+
+  mediaRecorder.onstop = saveRecording;
+  mediaRecorder.start(500); // 500ms chunks
+
+  const startBtn = document.getElementById('btn-start-rec');
+  startBtn.classList.add('recording');
+  startBtn.textContent = '⏺ Recording';
+  startBtn.disabled    = true;
+
+  document.getElementById('btn-stop-rec').disabled = false;
+
+  const recStatus = document.getElementById('rec-status');
+  recStatus.textContent = 'Recording…';
+  recStatus.classList.add('active');
+
+  log('Recording started', 'connected');
+}
+
+function stopRecording() {
+  if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+  mediaRecorder.stop();
+
+  const startBtn = document.getElementById('btn-start-rec');
+  startBtn.classList.remove('recording');
+  startBtn.textContent = '⏺ Record';
+  if (recordingStream) startBtn.disabled = false;
+
+  document.getElementById('btn-stop-rec').disabled = true;
+
+  const recStatus = document.getElementById('rec-status');
+  recStatus.textContent = 'Saving…';
+  recStatus.classList.remove('active');
+
+  log('Recording stopped', 'ended');
+}
+
+function saveRecording() {
+  const ext  = recordedChunks[0]?.type.includes('ogg') ? 'ogg' : 'webm';
+  const blob = new Blob(recordedChunks, { type: recordedChunks[0]?.type || 'audio/webm' });
+  const url  = URL.createObjectURL(blob);
+  const ts   = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+  const name = `ether-slop_${ts}_${recCount}.${ext}`;
+
+  const a = document.createElement('a');
+  a.href     = url;
+  a.download = name;
+  a.className = 'dl-link';
+  a.textContent = '↓ ' + name;
+  document.getElementById('downloads').prepend(a);
+
+  document.getElementById('rec-status').textContent = 'Saved';
+  log('Recording saved: ' + name, 'connected');
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════════════════
+function setStatus(type, text) {
+  const dot  = document.getElementById('dot');
+  const stEl = document.getElementById('status-text');
+  dot.className    = 'dot ' + type;
+  stEl.textContent = text;
+  stEl.className   = type === 'connected' ? 'connected' : type === 'error' ? 'error' : '';
+}
+
+function updateConnCount() {
+  document.getElementById('conn-count').textContent = connCount;
+}
+
+function log(msg, cls) {
+  const logEl = document.getElementById('log');
+  const now   = new Date().toLocaleTimeString('en-US', { hour12: false });
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+  entry.innerHTML = `<span class="log-time">${now}</span><span class="log-msg ${cls}">${msg}</span>`;
+  logEl.appendChild(entry);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+</script>
+</body>
+</html>

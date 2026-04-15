@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Ether Slop</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #06060a;
+      --tts:        #00ffc8;
+      --tts-glow:   rgba(0, 255, 200, 0.18);
+      --mic:        #ff7043;
+      --mic-glow:   rgba(255, 112, 67, 0.18);
+      --dim:        #1e1e2a;
+      --mid:        #4a4a5a;
+      --bright:     #b0b0c4;
+      --font:       'Space Mono', monospace;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--bright);
+      font-family: var(--font);
+      overflow: hidden;
+    }
+
+    /* Grain overlay */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 999;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+      background-size: 200px 200px;
+      opacity: 1;
+    }
+
+    /* ─── PERMISSION GATE ───────────────────────────────────────── */
+    #gate {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      z-index: 200;
+      padding: 32px;
+      text-align: center;
+      transition: opacity 0.6s;
+    }
+
+    #gate.fade-out { opacity: 0; pointer-events: none; }
+
+    #gate-title {
+      font-size: 0.65rem;
+      letter-spacing: 0.5em;
+      color: var(--mid);
+      text-transform: uppercase;
+      font-weight: 400;
+    }
+
+    #gate-body {
+      font-size: 0.68rem;
+      color: var(--mid);
+      letter-spacing: 0.08em;
+      line-height: 2;
+      max-width: 300px;
+    }
+
+    #gate-btn {
+      font-family: var(--font);
+      font-size: 0.72rem;
+      letter-spacing: 0.3em;
+      font-weight: 700;
+      text-transform: uppercase;
+      background: transparent;
+      border: 1px solid var(--tts);
+      color: var(--tts);
+      padding: 14px 36px;
+      cursor: pointer;
+      transition: background 0.2s;
+      margin-top: 8px;
+    }
+
+    #gate-btn:hover { background: var(--tts-glow); }
+
+    #gate-err {
+      font-size: 0.62rem;
+      color: var(--mic);
+      letter-spacing: 0.1em;
+      display: none;
+    }
+
+    /* ─── MAIN APP ──────────────────────────────────────────────── */
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100dvh;
+      height: 100vh;
+      opacity: 0;
+      transition: opacity 0.8s 0.3s;
+    }
+
+    #app.visible { opacity: 1; }
+
+    /* Stream */
+    #stream-wrap {
+      position: relative;
+      flex: 1 1 0;
+      background: #000;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    #stream-wrap iframe {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: block;
+    }
+
+    /* Transparent overlay to suppress Twitch hover UI */
+    #stream-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+    }
+
+    #no-stream {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.6rem;
+      letter-spacing: 0.4em;
+      color: #1a1a26;
+      text-transform: uppercase;
+      user-select: none;
+    }
+
+    /* Waveform band */
+    #wave-wrap {
+      flex: 0 0 96px;
+      position: relative;
+      border-top: 1px solid #141420;
+      border-bottom: 1px solid #141420;
+      overflow: hidden;
+    }
+
+    #waveform {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    #wave-label {
+      position: absolute;
+      top: 7px;
+      left: 12px;
+      font-size: 0.52rem;
+      letter-spacing: 0.35em;
+      text-transform: uppercase;
+      color: var(--dim);
+      transition: color 0.5s, opacity 0.5s;
+      pointer-events: none;
+    }
+
+    #wave-label.tts  { color: var(--tts); }
+    #wave-label.mic  { color: var(--mic); }
+
+    /* Controls */
+    #controls {
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 20px 24px 24px;
+    }
+
+    #status {
+      font-size: 0.56rem;
+      letter-spacing: 0.4em;
+      text-transform: uppercase;
+      color: var(--dim);
+      transition: color 0.4s;
+      min-height: 1.2em;
+      text-align: center;
+    }
+
+    #status.tx { color: var(--mic); }
+
+    #ptt {
+      font-family: var(--font);
+      font-size: clamp(0.85rem, 3.5vw, 1.15rem);
+      letter-spacing: 0.25em;
+      font-weight: 700;
+      text-transform: uppercase;
+      background: transparent;
+      border: 1px solid var(--mid);
+      color: var(--mid);
+      padding: clamp(14px, 3vw, 20px) clamp(28px, 8vw, 56px);
+      cursor: pointer;
+      transition: border-color 0.2s, color 0.2s, box-shadow 0.2s;
+      position: relative;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+      min-width: 220px;
+    }
+
+    #ptt:hover {
+      border-color: var(--bright);
+      color: var(--bright);
+    }
+
+    #ptt.active {
+      border-color: var(--mic);
+      color: var(--mic);
+      box-shadow: 0 0 20px var(--mic-glow), inset 0 0 20px var(--mic-glow);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 20px var(--mic-glow), inset 0 0 20px var(--mic-glow); }
+      50%       { box-shadow: 0 0 36px var(--mic-glow), inset 0 0 30px var(--mic-glow); }
+    }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+<!-- ─────────────────────────────────────────────────────────────────
+  CONFIGURATION — edit before deploying
+  ───────────────────────────────────────────────────────────────── -->
+<script>
+  const CONFIG = {
+
+    // Twitch channel username (e.g. 'arcos_dance')
+    twitchChannel: 'etherlive2',
+
+    // Domain where this page is hosted (must match Twitch embed 'parent' param)
+    // Leave as window.location.hostname for automatic detection
+    twitchDomain: window.location.hostname || 'localhost',
+
+    // Session code — must match performer.html exactly
+    sessionCode: 'ether-slop-2026',
+
+    // Google Sheet CSV export URL
+    // 1. Share your sheet as "Anyone with the link can view"
+    // 2. Replace SHEET_ID with your sheet's ID from the URL
+    // 3. Adjust sheet name if needed (default: Sheet1)
+    googleSheetCsvUrl: 'https://docs.google.com/spreadsheets/d/11UJ1keX2koBwi3-dE3ye78zsUlietQ6OXl9ETtst2M0/gviz/tq?tqx=out:csv&gid=812893338',
+
+    // Pause between TTS stories (ms)
+    ttsPauseBetween: 2800,
+
+    // TTS voice settings
+    ttsRate: 0.84,
+    ttsPitch: 0.88,
+
+  };
+</script>
+
+<!-- ─── PERMISSION GATE ──────────────────────────────────────────── -->
+<div id="gate">
+  <p id="gate-title">Ether Slop</p>
+  <p id="gate-body">This work requires access to your microphone.<br>No audio is transmitted until you choose to speak.</p>
+  <button id="gate-btn">Allow access</button>
+  <p id="gate-err">Microphone access was denied.<br>Enable it in your browser settings and reload.</p>
+</div>
+
+<!-- ─── MAIN APP ─────────────────────────────────────────────────── -->
+<div id="app">
+  <div id="stream-wrap">
+    <div id="no-stream">Stream offline</div>
+    <div id="stream-overlay"></div>
+  </div>
+
+  <div id="wave-wrap">
+    <canvas id="waveform"></canvas>
+    <span id="wave-label">—</span>
+  </div>
+
+  <div id="controls">
+    <div id="status">Listening</div>
+    <button id="ptt">Talk to me</button>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════════════════
+let audioCtx    = null;
+let analyser    = null;
+let micStream   = null;
+let peer        = null;
+let activeCall  = null;
+let isTx        = false;  // transmitting to performer
+let isTTS       = false;  // TTS currently speaking
+let stories     = [];
+let storyIdx    = 0;
+
+// Waveform animation state
+let synthPhase  = 0;
+let synthAmp    = 0;    // current (smoothed)
+let synthTarget = 0;   // target amplitude for TTS wave
+
+// ═══════════════════════════════════════════════════════════════════
+//  PERMISSION GATE
+// ═══════════════════════════════════════════════════════════════════
+document.getElementById('gate-btn').addEventListener('click', async () => {
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+
+    // Unlock AudioContext on user gesture (required by Safari)
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    await audioCtx.resume();
+
+    const source = audioCtx.createMediaStreamSource(micStream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.82;
+    source.connect(analyser);
+    // NOT connected to destination — user doesn't hear themselves
+
+    // Dismiss gate
+    const gate = document.getElementById('gate');
+    gate.classList.add('fade-out');
+    setTimeout(() => gate.classList.add('hidden'), 700);
+
+    const app = document.getElementById('app');
+    app.classList.remove('hidden');
+    requestAnimationFrame(() => app.classList.add('visible'));
+
+    boot();
+
+  } catch (err) {
+    document.getElementById('gate-err').style.display = 'block';
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  BOOT
+// ═══════════════════════════════════════════════════════════════════
+async function boot() {
+  injectTwitchEmbed();
+  drawLoop();
+  await fetchStories();
+  setTimeout(startTTS, 1000);
+  setupButton();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  TWITCH EMBED
+// ═══════════════════════════════════════════════════════════════════
+function injectTwitchEmbed() {
+  if (!CONFIG.twitchChannel || CONFIG.twitchChannel === 'YOUR_TWITCH_CHANNEL') return;
+
+  const wrap = document.getElementById('stream-wrap');
+  const iframe = document.createElement('iframe');
+  iframe.src = [
+    'https://player.twitch.tv/?channel=', CONFIG.twitchChannel,
+    '&parent=', CONFIG.twitchDomain,
+    '&autoplay=true&muted=false'
+  ].join('');
+  iframe.setAttribute('allow', 'autoplay; fullscreen');
+  iframe.allowFullscreen = true;
+  wrap.insertBefore(iframe, wrap.firstChild);
+  document.getElementById('no-stream').style.display = 'none';
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  GOOGLE SHEETS STORIES
+// ═══════════════════════════════════════════════════════════════════
+async function fetchStories() {
+  try {
+    const res = await fetch(CONFIG.googleSheetCsvUrl);
+    if (!res.ok) throw new Error('fetch failed');
+    const csv = await res.text();
+
+    // Parse CSV rows and extract column B (index 1)
+    const lines = csv.split('\n');
+    const rows = lines
+      .slice(1) // skip header row
+      .map(line => {
+        // Split CSV line respecting quoted fields
+        const cols = line.match(/("(?:[^"]|"")*"|[^,]*)/g)
+          .map(c => c.replace(/^"|"$/g, '').replace(/""/g, '"').trim());
+        return cols[1] || ''; // column B
+      })
+      .filter(l => l.length > 4);
+    if (rows.length > 0) {
+      stories = shuffle(rows);
+      return;
+    }
+  } catch (_) {
+    // fall through to defaults
+  }
+
+  // Placeholder stories if sheet unreachable
+  stories = [
+    'She said she only had one thing left to tell me.',
+    'I remember the sound more than anything else.',
+    'We kept the light on all night.',
+    'It was the last time I saw the place like that.',
+    'He never said it out loud but I understood.',
+    'I stayed longer than I meant to.',
+    'There was a window and through it, a parking lot.',
+    'I drove the same road three times before I realized.',
+  ];
+}
+
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  TEXT-TO-SPEECH
+// ═══════════════════════════════════════════════════════════════════
+// Lazy voice fetch — voices load async in some browsers
+let _voiceCache = null;
+function getVoices() {
+  if (_voiceCache && _voiceCache.length) return _voiceCache;
+  _voiceCache = window.speechSynthesis.getVoices();
+  return _voiceCache;
+}
+if ('speechSynthesis' in window) {
+  window.speechSynthesis.onvoiceschanged = () => { _voiceCache = window.speechSynthesis.getVoices(); };
+}
+
+function pickVoice() {
+  const voices = getVoices();
+  // Prefer natural-sounding English voices that read as slightly inhuman at low pitch
+  const preferred = voices.find(v => /samantha|karen|moira|fiona|tessa|daniel/i.test(v.name))
+                 || voices.find(v => v.lang.startsWith('en'))
+                 || voices[0];
+  return preferred || null;
+}
+
+function startTTS() {
+  if (isTx || !('speechSynthesis' in window)) return;
+  if (!stories.length) { setTimeout(startTTS, 400); return; }
+
+  const text = stories[storyIdx % stories.length];
+  storyIdx++;
+
+  const utt = new SpeechSynthesisUtterance(text);
+  utt.rate   = CONFIG.ttsRate;
+  utt.pitch  = CONFIG.ttsPitch;
+  utt.volume = 1;
+
+  const voice = pickVoice();
+  if (voice) utt.voice = voice;
+
+  utt.onstart = () => {
+    isTTS = true;
+    synthTarget = 1;
+    setLabel('Machine speaking', 'tts');
+    setStatus('Listening', false);
+  };
+
+  utt.onend = () => {
+    isTTS = false;
+    synthTarget = 0.12;
+    setLabel('—', '');
+    if (!isTx) setTimeout(startTTS, CONFIG.ttsPauseBetween);
+  };
+
+  utt.onerror = () => {
+    isTTS = false;
+    synthTarget = 0;
+    if (!isTx) setTimeout(startTTS, CONFIG.ttsPauseBetween);
+  };
+
+  window.speechSynthesis.speak(utt);
+}
+
+function stopTTS() {
+  isTTS = false;
+  synthTarget = 0;
+  window.speechSynthesis.cancel();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  WAVEFORM RENDERING
+// ═══════════════════════════════════════════════════════════════════
+function drawLoop() {
+  const canvas = document.getElementById('waveform');
+  const ctx    = canvas.getContext('2d');
+
+  // Occasional glitch state for synthetic wave
+  let glitchTimer = 0;
+  let glitchActive = false;
+
+  function frame() {
+    requestAnimationFrame(frame);
+
+    // Match canvas resolution to display size
+    const w = canvas.offsetWidth;
+    const h = canvas.offsetHeight;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width  = w;
+      canvas.height = h;
+    }
+
+    ctx.clearRect(0, 0, w, h);
+
+    // Smooth amplitude toward target
+    synthAmp += (synthTarget - synthAmp) * 0.06;
+
+    // Glitch logic for synthetic wave
+    glitchTimer++;
+    if (!glitchActive && glitchTimer > 300 && Math.random() < 0.003) {
+      glitchActive = true;
+      glitchTimer  = 0;
+      setTimeout(() => { glitchActive = false; }, 80 + Math.random() * 120);
+    }
+
+    if (isTx && analyser) {
+      drawMicWave(ctx, w, h);
+    } else {
+      drawSynthWave(ctx, w, h, glitchActive);
+    }
+  }
+
+  frame();
+}
+
+function drawSynthWave(ctx, w, h, glitch) {
+  synthPhase += 0.016 + (glitch ? 0.08 : 0);
+
+  const amp   = synthAmp * (h * 0.38);
+  const alpha = 0.25 + synthAmp * 0.75;
+  const color = `rgba(0, 255, 200, ${alpha})`;
+
+  // Glow layer
+  ctx.save();
+  ctx.filter = 'blur(5px)';
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  _synthPath(ctx, w, h, amp, glitch);
+  ctx.restore();
+
+  // Crisp layer
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = 1.5;
+  _synthPath(ctx, w, h, amp, glitch);
+
+  // Centerline
+  ctx.strokeStyle = 'rgba(0,255,200,0.04)';
+  ctx.lineWidth   = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, h / 2);
+  ctx.lineTo(w, h / 2);
+  ctx.stroke();
+}
+
+function _synthPath(ctx, w, h, amp, glitch) {
+  const steps = Math.min(w, 400); // performance limit
+  const dx    = w / steps;
+  ctx.beginPath();
+  for (let i = 0; i <= steps; i++) {
+    const t  = (i / steps) * Math.PI * 2;
+    const gd = glitch ? (Math.random() - 0.5) * amp * 0.6 : 0;
+    const y  = h / 2
+              + Math.sin(t * 3  + synthPhase)         * amp * 0.65
+              + Math.sin(t * 8  + synthPhase * 1.3)   * amp * 0.22
+              + Math.sin(t * 19 + synthPhase * 0.8)   * amp * 0.08
+              + gd;
+    const x = i * dx;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function drawMicWave(ctx, w, h) {
+  const len  = analyser.frequencyBinCount;
+  const data = new Uint8Array(len);
+  analyser.getByteTimeDomainData(data);
+
+  // Glow layer
+  ctx.save();
+  ctx.filter = 'blur(4px)';
+  ctx.strokeStyle = 'rgba(255, 112, 67, 0.5)';
+  ctx.lineWidth = 3;
+  _micPath(ctx, data, len, w, h);
+  ctx.restore();
+
+  // Crisp layer
+  ctx.strokeStyle = '#ff7043';
+  ctx.lineWidth   = 1.8;
+  _micPath(ctx, data, len, w, h);
+}
+
+function _micPath(ctx, data, len, w, h) {
+  const sw = w / len;
+  ctx.beginPath();
+  for (let i = 0; i < len; i++) {
+    const v = data[i] / 128.0;
+    const y = (v * h) / 2;
+    const x = i * sw;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  PTT BUTTON
+// ═══════════════════════════════════════════════════════════════════
+function setupButton() {
+  const btn = document.getElementById('ptt');
+  btn.addEventListener('click', () => isTx ? endTransmit() : beginTransmit());
+}
+
+function beginTransmit() {
+  isTx = true;
+  stopTTS();
+  synthTarget = 0;
+
+  const btn = document.getElementById('ptt');
+  btn.textContent = 'Transmitting';
+  btn.classList.add('active');
+
+  setStatus('Your voice is live', true);
+  setLabel('Your voice', 'mic');
+
+  connectToPerformer();
+}
+
+function endTransmit() {
+  isTx = false;
+  disconnectFromPerformer();
+
+  const btn = document.getElementById('ptt');
+  btn.textContent = 'Talk to me';
+  btn.classList.remove('active');
+
+  setStatus('Listening', false);
+  setLabel('—', '');
+  synthTarget = 0.08;
+
+  setTimeout(startTTS, 1600);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  WEBRTC / PEERJS — streams mic audio to performer.html
+// ═══════════════════════════════════════════════════════════════════
+function connectToPerformer() {
+  const performerId = CONFIG.sessionCode + '-performer';
+
+  peer = new Peer(undefined, { debug: 0 });
+
+  peer.on('open', () => {
+    const call = peer.call(performerId, micStream);
+    activeCall  = call;
+
+    call.on('error', err => console.warn('Call error:', err));
+    call.on('close', () => { activeCall = null; });
+  });
+
+  peer.on('error', err => {
+    // Silently fail — don't interrupt performance
+    console.warn('Peer error:', err.type);
+  });
+}
+
+function disconnectFromPerformer() {
+  if (activeCall) { activeCall.close(); activeCall = null; }
+  if (peer)       { peer.destroy();     peer = null;       }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════════════════
+function setStatus(text, tx) {
+  const el = document.getElementById('status');
+  el.textContent = text;
+  el.classList.toggle('tx', tx);
+}
+
+function setLabel(text, cls) {
+  const el = document.getElementById('wave-label');
+  el.textContent = text;
+  el.className   = cls;
+}
+</script>
+</body>
+</html>
