@@ -6,6 +6,7 @@
   <title>Ether Slop</title>
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script src="https://player.twitch.tv/js/embed/v1.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -120,7 +121,9 @@
       min-height: 0;
     }
 
-    #stream-wrap iframe {
+    #stream-wrap iframe,
+    #twitch-embed,
+    #twitch-embed > iframe {
       position: absolute;
       inset: 0;
       width: 100%;
@@ -285,6 +288,7 @@
 <!-- ─── MAIN APP ─────────────────────────────────────────────────── -->
 <div id="app">
   <div id="stream-wrap">
+    <div id="twitch-embed"></div>
     <div id="no-stream">Stream offline</div>
     <div id="stream-overlay"></div>
   </div>
@@ -313,6 +317,7 @@ let isTx        = false;  // transmitting to performer
 let isTTS       = false;  // TTS currently speaking
 let stories     = [];
 let storyIdx    = 0;
+let twitchPlayer = null;  // Twitch Embed player instance
 
 // Waveform animation state
 let synthPhase  = 0;
@@ -329,6 +334,12 @@ document.getElementById('gate-btn').addEventListener('click', async () => {
     // Unlock AudioContext on user gesture (required by Safari)
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     await audioCtx.resume();
+
+    // Unmute Twitch player now that we have a user gesture
+    if (twitchPlayer) {
+      twitchPlayer.setMuted(false);
+      twitchPlayer.play();
+    }
 
     const source = audioCtx.createMediaStreamSource(micStream);
     analyser = audioCtx.createAnalyser();
@@ -365,44 +376,69 @@ async function boot() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  TWITCH EMBED
+//  TWITCH EMBED (JS API — allows programmatic unmute after user gesture)
 // ═══════════════════════════════════════════════════════════════════
 function injectTwitchEmbed() {
   if (!CONFIG.twitchChannel || CONFIG.twitchChannel === 'YOUR_TWITCH_CHANNEL') return;
+  if (typeof Twitch === 'undefined') {
+    // Script not yet loaded — retry shortly
+    setTimeout(injectTwitchEmbed, 200);
+    return;
+  }
 
-  const wrap = document.getElementById('stream-wrap');
-  const iframe = document.createElement('iframe');
-  iframe.src = [
-    'https://player.twitch.tv/?channel=', CONFIG.twitchChannel,
-    '&parent=', CONFIG.twitchDomain,
-    '&autoplay=true&muted=false'
-  ].join('');
-  iframe.setAttribute('allow', 'autoplay; fullscreen');
-  iframe.allowFullscreen = true;
-  wrap.insertBefore(iframe, wrap.firstChild);
-  document.getElementById('no-stream').style.display = 'none';
+  const embed = new Twitch.Embed('twitch-embed', {
+    width:   '100%',
+    height:  '100%',
+    channel: CONFIG.twitchChannel,
+    layout:  'video',
+    autoplay: true,
+    muted:   true,   // start muted (browser policy); unmuted after gate click
+    parent:  [CONFIG.twitchDomain],
+  });
+
+  embed.addEventListener(Twitch.Embed.VIDEO_READY, () => {
+    twitchPlayer = embed.getPlayer();
+    document.getElementById('no-stream').style.display = 'none';
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════
 //  GOOGLE SHEETS STORIES
 // ═══════════════════════════════════════════════════════════════════
+
+// Robust CSV parser — handles quoted fields and escaped quotes
+function parseCSVLine(line) {
+  const cols = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') { current += '"'; i++; } // escaped quote
+      else inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      cols.push(current); current = '';
+    } else {
+      current += ch;
+    }
+  }
+  cols.push(current);
+  return cols;
+}
+
 async function fetchStories() {
   try {
     const res = await fetch(CONFIG.googleSheetCsvUrl);
     if (!res.ok) throw new Error('fetch failed');
     const csv = await res.text();
 
-    // Parse CSV rows and extract column B (index 1)
+    // Parse CSV and extract column B (index 1)
     const lines = csv.split('\n');
     const rows = lines
       .slice(1) // skip header row
-      .map(line => {
-        // Split CSV line respecting quoted fields
-        const cols = line.match(/("(?:[^"]|"")*"|[^,]*)/g)
-          .map(c => c.replace(/^"|"$/g, '').replace(/""/g, '"').trim());
-        return cols[1] || ''; // column B
-      })
-      .filter(l => l.length > 4);
+      .map(line => parseCSVLine(line)[1] || '')
+      .map(s => s.trim())
+      .filter(s => s.length > 4);
     if (rows.length > 0) {
       stories = shuffle(rows);
       return;
