@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <title>Ether Slop</title>
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <script src="https://player.twitch.tv/js/embed/v1.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -260,9 +259,6 @@
     // Leave as window.location.hostname for automatic detection
     twitchDomain: window.location.hostname || 'localhost',
 
-    // Session code — must match performer.html exactly
-    sessionCode: 'ether-slop-2026',
-
     // Google Sheet CSV export URL
     // 1. Share your sheet as "Anyone with the link can view"
     // 2. Replace SHEET_ID with your sheet's ID from the URL
@@ -313,9 +309,7 @@
 let audioCtx    = null;
 let analyser    = null;
 let micStream   = null;
-let peer        = null;
-let activeCall  = null;
-let isTx        = false;  // transmitting to performer
+let isTx        = false;  // talk-to-me state
 let isTTS       = false;  // TTS currently speaking
 let stories     = [];
 let storyIdx    = 0;
@@ -676,13 +670,10 @@ function beginTransmit() {
 
   setStatus('Your voice is live', true);
   setLabel('Your voice', 'mic');
-
-  connectToPerformer();
 }
 
 function endTransmit() {
   isTx = false;
-  disconnectFromPerformer();
 
   const btn = document.getElementById('ptt');
   btn.textContent = 'Talk to me';
@@ -693,33 +684,6 @@ function endTransmit() {
   synthTarget = 0.08;
 
   setTimeout(startTTS, 1600);
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  WEBRTC / PEERJS — streams mic audio to performer.html
-// ═══════════════════════════════════════════════════════════════════
-function connectToPerformer() {
-  const performerId = CONFIG.sessionCode + '-performer';
-
-  peer = new Peer(undefined, { debug: 0 });
-
-  peer.on('open', () => {
-    const call = peer.call(performerId, micStream);
-    activeCall  = call;
-
-    call.on('error', err => console.warn('Call error:', err));
-    call.on('close', () => { activeCall = null; });
-  });
-
-  peer.on('error', err => {
-    // Silently fail — don't interrupt performance
-    console.warn('Peer error:', err.type);
-  });
-}
-
-function disconnectFromPerformer() {
-  if (activeCall) { activeCall.close(); activeCall = null; }
-  if (peer)       { peer.destroy();     peer = null;       }
 }
 
 // ═══════════════════════════════════════════════════════════════════
