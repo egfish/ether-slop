@@ -132,11 +132,13 @@
       display: block;
     }
 
-    /* Transparent overlay to suppress Twitch hover UI */
+    /* Transparent overlay — blocks all pointer events so Twitch UI never shows */
     #stream-overlay {
       position: absolute;
       inset: 0;
-      z-index: 2;
+      z-index: 50;
+      background: transparent;
+      cursor: default;
     }
 
     #no-stream {
@@ -252,7 +254,7 @@
   const CONFIG = {
 
     // Twitch channel username (e.g. 'arcos_dance')
-    twitchChannel: 'etherlive2',
+    twitchChannel: 'etherlive4',
 
     // Domain where this page is hosted (must match Twitch embed 'parent' param)
     // Leave as window.location.hostname for automatic detection
@@ -335,11 +337,7 @@ document.getElementById('gate-btn').addEventListener('click', async () => {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     await audioCtx.resume();
 
-    // Unmute Twitch player now that we have a user gesture
-    if (twitchPlayer) {
-      twitchPlayer.setMuted(false);
-      twitchPlayer.play();
-    }
+    // Twitch stays muted throughout — no sound from stream
 
     const source = audioCtx.createMediaStreamSource(micStream);
     analyser = audioCtx.createAnalyser();
