@@ -314,6 +314,7 @@ let isTTS       = false;  // TTS currently speaking
 let stories     = [];
 let storyIdx    = 0;
 let twitchPlayer = null;  // Twitch Embed player instance
+let pendingPlay = false;  // true if user clicked gate before player was ready
 
 // Waveform animation state
 let synthPhase  = 0;
@@ -331,7 +332,12 @@ document.getElementById('gate-btn').addEventListener('click', async () => {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     await audioCtx.resume();
 
-    // Twitch stays muted throughout — no sound from stream
+    // Start Twitch playback now that we have a user gesture.
+    // Stays muted — we just need to kick playback off.
+    pendingPlay = true;
+    if (twitchPlayer) {
+      try { twitchPlayer.play(); pendingPlay = false; } catch(e) {}
+    }
 
     const source = audioCtx.createMediaStreamSource(micStream);
     analyser = audioCtx.createAnalyser();
@@ -391,6 +397,9 @@ function injectTwitchEmbed() {
   embed.addEventListener(Twitch.Embed.VIDEO_READY, () => {
     twitchPlayer = embed.getPlayer();
     document.getElementById('no-stream').style.display = 'none';
+    if (pendingPlay) {
+      try { twitchPlayer.play(); pendingPlay = false; } catch(e) {}
+    }
   });
 }
 
