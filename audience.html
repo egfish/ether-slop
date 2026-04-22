@@ -504,16 +504,41 @@ function pickVoice() {
   return pick;
 }
 
-// Keepalive hack — Chrome/Safari silently pause speechSynthesis after
-// ~15s of continuous or queued speech. Pausing and immediately resuming
-// kicks the engine back to life. Harmless if nothing is queued.
+// ───────────────────────────────────────────────────────────────────
+// TTS watchdog: tracks when TTS last showed signs of life (onstart,
+// onboundary, onend events). If the system falls silent for too long
+// — which happens in Chrome/Safari due to a long-standing bug where
+// speechSynthesis just stops without firing onend — the watchdog
+// force-restarts the queue.
+// ───────────────────────────────────────────────────────────────────
+let _ttsLastActivity = Date.now();
+function markTTSActivity() { _ttsLastActivity = Date.now(); }
+
+setInterval(() => {
+  if (isTx) return;                      // user is talking, TTS intentionally off
+  if (!('speechSynthesis' in window)) return;
+  if (!stories.length) return;           // not booted yet
+
+  const quietMs = Date.now() - _ttsLastActivity;
+  if (quietMs > 3500) {
+    // Force a clean restart — cancel whatever's stuck, then relaunch.
+    try { window.speechSynthesis.cancel(); } catch(_) {}
+    isTTS = false;
+    synthTarget = 0;
+    markTTSActivity();
+    setTimeout(startTTS, 250);
+  }
+}, 1200);
+
+// Gentle keepalive for Chrome's 15-second auto-pause bug. Using resume()
+// alone (without pause first) is safer than pause/resume — it just
+// nudges the engine without risk of dropping the current utterance.
 setInterval(() => {
   if (!('speechSynthesis' in window)) return;
-  if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
-    window.speechSynthesis.pause();
-    window.speechSynthesis.resume();
+  if (window.speechSynthesis.speaking) {
+    try { window.speechSynthesis.resume(); } catch(_) {}
   }
-}, 10000);
+}, 5000);
 
 function randomStory() {
   if (!stories.length) return '';
@@ -542,11 +567,13 @@ function startTTS() {
     synthTarget = 0.35;  // low resting amplitude for strong contrast
     setLabel('Machine speaking', 'tts');
     setStatus('Listening', false);
+    markTTSActivity();
   };
 
   // Pulse amplitude on each word boundary — makes the synthetic waveform
   // appear responsive to the actual speech cadence.
   utt.onboundary = (ev) => {
+    markTTSActivity();
     if (ev.name === 'word' || !ev.name) {
       // Strong, varied peaks — some words punch harder than others
       synthTarget = 1.3 + Math.random() * 0.5;
@@ -561,12 +588,14 @@ function startTTS() {
     isTTS = false;
     synthTarget = 0.1;
     setLabel('—', '');
+    markTTSActivity();
     if (!isTx) setTimeout(startTTS, CONFIG.ttsPauseBetween);
   };
 
   utt.onerror = (e) => {
     isTTS = false;
     synthTarget = 0;
+    markTTSActivity();
     // Don't retry on 'canceled' or 'interrupted' — those are intentional
     if (!isTx && e.error !== 'canceled' && e.error !== 'interrupted') {
       setTimeout(startTTS, CONFIG.ttsPauseBetween);
