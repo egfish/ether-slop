@@ -315,6 +315,7 @@ let stories     = [];
 let storyIdx    = 0;
 let twitchPlayer = null;  // Twitch Embed player instance
 let pendingPlay = false;  // true if user clicked gate before player was ready
+let ttsGen      = 0;      // incremented on every TTS cancel/restart to invalidate stale callbacks
 
 // Waveform animation state
 let synthPhase  = 0;
@@ -612,6 +613,10 @@ function startTTS() {
   if (isTx || !('speechSynthesis' in window)) return;
   if (!stories.length) { setTimeout(startTTS, 400); return; }
 
+  // Invalidate any in-flight callbacks from previous utterances
+  ttsGen++;
+  const myGen = ttsGen;
+
   // Flush any stuck state from prior utterances
   try { window.speechSynthesis.cancel(); } catch(_) {}
 
@@ -619,13 +624,13 @@ function startTTS() {
   const chunks = splitIntoChunks(text);
   const voice  = pickVoice();  // lock same voice for full story
 
-  speakChunks(chunks, 0, voice);
+  speakChunks(chunks, 0, voice, myGen);
 }
 
-function speakChunks(chunks, idx, voice) {
+function speakChunks(chunks, idx, voice, gen) {
+  if (gen !== ttsGen) return;   // superseded — bail out
   if (isTx) return;
   if (idx >= chunks.length) {
-    // Full story complete — brief pause, then next
     if (!isTx) setTimeout(startTTS, CONFIG.ttsPauseBetween);
     return;
   }
@@ -637,6 +642,7 @@ function speakChunks(chunks, idx, voice) {
   if (voice) utt.voice = voice;
 
   utt.onstart = () => {
+    if (gen !== ttsGen) return;
     isTTS = true;
     synthTarget = 0.35;
     setLabel('Machine speaking', 'tts');
@@ -645,21 +651,22 @@ function speakChunks(chunks, idx, voice) {
   };
 
   utt.onboundary = (ev) => {
+    if (gen !== ttsGen) return;
     markTTSActivity();
     if (ev.name === 'word' || !ev.name) {
       synthTarget = 1.3 + Math.random() * 0.5;
       setTimeout(() => {
+        if (gen !== ttsGen) return;
         if (isTTS) synthTarget = 0.2 + Math.random() * 0.35;
       }, 70 + Math.random() * 80);
     }
   };
 
   utt.onend = () => {
+    if (gen !== ttsGen) return;
     markTTSActivity();
-    // Continue with next chunk of same story, or next story if done
     if (idx + 1 < chunks.length) {
-      // Small gap between chunks; keep isTTS true to avoid flicker
-      setTimeout(() => speakChunks(chunks, idx + 1, voice), 120);
+      setTimeout(() => speakChunks(chunks, idx + 1, voice, gen), 120);
     } else {
       isTTS = false;
       synthTarget = 0.1;
@@ -669,11 +676,11 @@ function speakChunks(chunks, idx, voice) {
   };
 
   utt.onerror = (e) => {
+    if (gen !== ttsGen) return;
     markTTSActivity();
     if (e.error === 'canceled' || e.error === 'interrupted') return;
-    // Try to keep going — skip this chunk, attempt next
     if (idx + 1 < chunks.length) {
-      setTimeout(() => speakChunks(chunks, idx + 1, voice), 200);
+      setTimeout(() => speakChunks(chunks, idx + 1, voice, gen), 200);
     } else {
       isTTS = false;
       synthTarget = 0;
@@ -682,12 +689,14 @@ function speakChunks(chunks, idx, voice) {
   };
 
   setTimeout(() => {
+    if (gen !== ttsGen) return;
     try { window.speechSynthesis.speak(utt); }
     catch(_) { setTimeout(startTTS, 1000); }
   }, 40);
 }
 
 function stopTTS() {
+  ttsGen++;                     // invalidate any pending callbacks
   isTTS = false;
   synthTarget = 0;
   if ('speechSynthesis' in window) {
