@@ -487,9 +487,14 @@ if ('speechSynthesis' in window) {
 // Track the last voice used so we don't immediately repeat.
 let _lastVoiceName = null;
 
+// macOS novelty voices that aren't actually speech — exclude from rotation
+const EXCLUDED_VOICES = /^(bubbles|whisper|cellos|bells|good news|bad news|organ|pipe organ)$/i;
+
 function getEnglishVoices() {
   // Prefer local voices — cloud voices can fail silently on network hiccups
-  const all = getVoices().filter(v => v.lang && v.lang.startsWith('en'));
+  const all = getVoices()
+    .filter(v => v.lang && v.lang.startsWith('en'))
+    .filter(v => !EXCLUDED_VOICES.test(v.name.trim()));
   const local = all.filter(v => v.localService);
   return local.length ? local : all;
 }
