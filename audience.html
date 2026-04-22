@@ -488,7 +488,10 @@ if ('speechSynthesis' in window) {
 let _lastVoiceName = null;
 
 function getEnglishVoices() {
-  return getVoices().filter(v => v.lang && v.lang.startsWith('en'));
+  // Prefer local voices — cloud voices can fail silently on network hiccups
+  const all = getVoices().filter(v => v.lang && v.lang.startsWith('en'));
+  const local = all.filter(v => v.localService);
+  return local.length ? local : all;
 }
 
 function pickVoice() {
@@ -545,39 +548,86 @@ function randomStory() {
   return stories[Math.floor(Math.random() * stories.length)];
 }
 
+// Split long text into utterance-sized chunks. Browsers have hard limits
+// per utterance (~200 chars in Chrome) and will truncate anything longer.
+// Split at sentence boundaries first, then by length as fallback.
+function splitIntoChunks(text, maxLen = 160) {
+  if (text.length <= maxLen) return [text];
+
+  // Split on sentence boundaries, keeping the punctuation
+  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
+
+  const chunks = [];
+  let buffer = '';
+  for (const s of sentences) {
+    const sentence = s.trim();
+    if (!sentence) continue;
+
+    // If a single sentence is still too long, split by commas or length
+    if (sentence.length > maxLen) {
+      if (buffer) { chunks.push(buffer); buffer = ''; }
+      const parts = sentence.split(/,\s*/);
+      let sub = '';
+      for (const p of parts) {
+        if ((sub + ', ' + p).length > maxLen && sub) {
+          chunks.push(sub);
+          sub = p;
+        } else {
+          sub = sub ? sub + ', ' + p : p;
+        }
+      }
+      if (sub) chunks.push(sub);
+    } else if ((buffer + ' ' + sentence).length > maxLen) {
+      if (buffer) chunks.push(buffer);
+      buffer = sentence;
+    } else {
+      buffer = buffer ? buffer + ' ' + sentence : sentence;
+    }
+  }
+  if (buffer) chunks.push(buffer);
+  return chunks;
+}
+
 function startTTS() {
   if (isTx || !('speechSynthesis' in window)) return;
   if (!stories.length) { setTimeout(startTTS, 400); return; }
 
-  // Cancel anything stuck in the queue before starting fresh
-  window.speechSynthesis.cancel();
+  // Flush any stuck state from prior utterances
+  try { window.speechSynthesis.cancel(); } catch(_) {}
 
-  const text = randomStory();
+  const text   = randomStory();
+  const chunks = splitIntoChunks(text);
+  const voice  = pickVoice();  // lock same voice for full story
 
-  const utt = new SpeechSynthesisUtterance(text);
+  speakChunks(chunks, 0, voice);
+}
+
+function speakChunks(chunks, idx, voice) {
+  if (isTx) return;
+  if (idx >= chunks.length) {
+    // Full story complete — brief pause, then next
+    if (!isTx) setTimeout(startTTS, CONFIG.ttsPauseBetween);
+    return;
+  }
+
+  const utt = new SpeechSynthesisUtterance(chunks[idx]);
   utt.rate   = CONFIG.ttsRate;
   utt.pitch  = CONFIG.ttsPitch;
   utt.volume = 1;
-
-  const voice = pickVoice();
   if (voice) utt.voice = voice;
 
   utt.onstart = () => {
     isTTS = true;
-    synthTarget = 0.35;  // low resting amplitude for strong contrast
+    synthTarget = 0.35;
     setLabel('Machine speaking', 'tts');
     setStatus('Listening', false);
     markTTSActivity();
   };
 
-  // Pulse amplitude on each word boundary — makes the synthetic waveform
-  // appear responsive to the actual speech cadence.
   utt.onboundary = (ev) => {
     markTTSActivity();
     if (ev.name === 'word' || !ev.name) {
-      // Strong, varied peaks — some words punch harder than others
       synthTarget = 1.3 + Math.random() * 0.5;
-      // Decay to a varied lower amplitude between words
       setTimeout(() => {
         if (isTTS) synthTarget = 0.2 + Math.random() * 0.35;
       }, 70 + Math.random() * 80);
@@ -585,28 +635,36 @@ function startTTS() {
   };
 
   utt.onend = () => {
-    isTTS = false;
-    synthTarget = 0.1;
-    setLabel('—', '');
     markTTSActivity();
-    if (!isTx) setTimeout(startTTS, CONFIG.ttsPauseBetween);
-  };
-
-  utt.onerror = (e) => {
-    isTTS = false;
-    synthTarget = 0;
-    markTTSActivity();
-    // Don't retry on 'canceled' or 'interrupted' — those are intentional
-    if (!isTx && e.error !== 'canceled' && e.error !== 'interrupted') {
-      setTimeout(startTTS, CONFIG.ttsPauseBetween);
+    // Continue with next chunk of same story, or next story if done
+    if (idx + 1 < chunks.length) {
+      // Small gap between chunks; keep isTTS true to avoid flicker
+      setTimeout(() => speakChunks(chunks, idx + 1, voice), 120);
+    } else {
+      isTTS = false;
+      synthTarget = 0.1;
+      setLabel('—', '');
+      if (!isTx) setTimeout(startTTS, CONFIG.ttsPauseBetween);
     }
   };
 
-  // Small delay before speaking helps Safari register the utterance reliably
+  utt.onerror = (e) => {
+    markTTSActivity();
+    if (e.error === 'canceled' || e.error === 'interrupted') return;
+    // Try to keep going — skip this chunk, attempt next
+    if (idx + 1 < chunks.length) {
+      setTimeout(() => speakChunks(chunks, idx + 1, voice), 200);
+    } else {
+      isTTS = false;
+      synthTarget = 0;
+      if (!isTx) setTimeout(startTTS, CONFIG.ttsPauseBetween);
+    }
+  };
+
   setTimeout(() => {
     try { window.speechSynthesis.speak(utt); }
-    catch(e) { setTimeout(startTTS, 1000); }
-  }, 60);
+    catch(_) { setTimeout(startTTS, 1000); }
+  }, 40);
 }
 
 function stopTTS() {
@@ -644,12 +702,12 @@ function drawLoop() {
     // Smooth amplitude toward target — faster response for punchy pulses
     synthAmp += (synthTarget - synthAmp) * 0.14;
 
-    // Glitch logic for synthetic wave
+    // Glitch logic for synthetic wave — happens more frequently now
     glitchTimer++;
-    if (!glitchActive && glitchTimer > 300 && Math.random() < 0.003) {
+    if (!glitchActive && glitchTimer > 60 && Math.random() < 0.018) {
       glitchActive = true;
       glitchTimer  = 0;
-      setTimeout(() => { glitchActive = false; }, 80 + Math.random() * 120);
+      setTimeout(() => { glitchActive = false; }, 60 + Math.random() * 180);
     }
 
     if (isTx && analyser) {
