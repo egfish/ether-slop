@@ -491,9 +491,10 @@ let _lastVoiceName = null;
 // macOS novelty voices that aren't actually speech — exclude from rotation.
 // Match is case-insensitive and tolerant of locale suffixes like "(en-US)".
 const EXCLUDED_VOICES = [
-  'bubbles', 'whisper', 'cellos', 'bells', 'good news', 'bad news',
-  'organ', 'pipe organ', 'deranged', 'boing', 'trinoids', 'zarvox',
-  'wobble', 'hysterical',
+  'albert', 'bad news', 'bahh', 'bells', 'boing', 'bubbles',
+  'cellos', 'deranged', 'good news', 'hysterical', 'jester',
+  'organ', 'pipe organ', 'superstar', 'trinoids', 'whisper',
+  'wobble', 'zarvox',
 ];
 
 function isExcludedVoice(name) {
@@ -545,7 +546,10 @@ setInterval(() => {
 
   const quietMs = Date.now() - _ttsLastActivity;
   if (quietMs > 3500) {
-    // Force a clean restart — cancel whatever's stuck, then relaunch.
+    // Force a clean restart — invalidate all pending callbacks from
+    // the stuck utterance before canceling, so their onend/onerror
+    // events don't launch competing flows.
+    ttsGen++;
     try { window.speechSynthesis.cancel(); } catch(_) {}
     isTTS = false;
     synthTarget = 0;
@@ -863,6 +867,8 @@ function endTransmit() {
   setLabel('—', '');
   synthTarget = 0.08;
 
+  // Prevent watchdog from firing during the cooldown gap before next TTS
+  markTTSActivity();
   setTimeout(startTTS, 1600);
 }
 
