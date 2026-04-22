@@ -266,7 +266,7 @@
     googleSheetCsvUrl: 'https://docs.google.com/spreadsheets/d/11UJ1keX2koBwi3-dE3ye78zsUlietQ6OXl9ETtst2M0/gviz/tq?tqx=out:csv&gid=812893338',
 
     // Pause between TTS stories (ms)
-    ttsPauseBetween: 2800,
+    ttsPauseBetween: 1000,
 
     // TTS voice settings
     ttsRate: 0.84,
@@ -298,7 +298,7 @@
 
   <div id="controls">
     <div id="status">Listening</div>
-    <button id="ptt">Talk to me</button>
+    <button id="ptt">Click to Talk</button>
   </div>
 </div>
 
@@ -484,21 +484,50 @@ if ('speechSynthesis' in window) {
   window.speechSynthesis.onvoiceschanged = () => { _voiceCache = window.speechSynthesis.getVoices(); };
 }
 
+// Track the last voice used so we don't immediately repeat.
+let _lastVoiceName = null;
+
+function getEnglishVoices() {
+  return getVoices().filter(v => v.lang && v.lang.startsWith('en'));
+}
+
 function pickVoice() {
-  const voices = getVoices();
-  // Prefer natural-sounding English voices that read as slightly inhuman at low pitch
-  const preferred = voices.find(v => /samantha|karen|moira|fiona|tessa|daniel/i.test(v.name))
-                 || voices.find(v => v.lang.startsWith('en'))
-                 || voices[0];
-  return preferred || null;
+  const voices = getEnglishVoices();
+  if (!voices.length) return getVoices()[0] || null;
+
+  // Pick any voice at random, avoiding the most recent one
+  const candidates = voices.filter(v => v.name !== _lastVoiceName);
+  const pool = candidates.length ? candidates : voices;
+  const pick = pool[Math.floor(Math.random() * pool.length)];
+
+  _lastVoiceName = pick.name;
+  return pick;
+}
+
+// Keepalive hack — Chrome/Safari silently pause speechSynthesis after
+// ~15s of continuous or queued speech. Pausing and immediately resuming
+// kicks the engine back to life. Harmless if nothing is queued.
+setInterval(() => {
+  if (!('speechSynthesis' in window)) return;
+  if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
+    window.speechSynthesis.pause();
+    window.speechSynthesis.resume();
+  }
+}, 10000);
+
+function randomStory() {
+  if (!stories.length) return '';
+  return stories[Math.floor(Math.random() * stories.length)];
 }
 
 function startTTS() {
   if (isTx || !('speechSynthesis' in window)) return;
   if (!stories.length) { setTimeout(startTTS, 400); return; }
 
-  const text = stories[storyIdx % stories.length];
-  storyIdx++;
+  // Cancel anything stuck in the queue before starting fresh
+  window.speechSynthesis.cancel();
+
+  const text = randomStory();
 
   const utt = new SpeechSynthesisUtterance(text);
   utt.rate   = CONFIG.ttsRate;
@@ -510,31 +539,53 @@ function startTTS() {
 
   utt.onstart = () => {
     isTTS = true;
-    synthTarget = 1;
+    synthTarget = 0.35;  // low resting amplitude for strong contrast
     setLabel('Machine speaking', 'tts');
     setStatus('Listening', false);
   };
 
+  // Pulse amplitude on each word boundary — makes the synthetic waveform
+  // appear responsive to the actual speech cadence.
+  utt.onboundary = (ev) => {
+    if (ev.name === 'word' || !ev.name) {
+      // Strong, varied peaks — some words punch harder than others
+      synthTarget = 1.3 + Math.random() * 0.5;
+      // Decay to a varied lower amplitude between words
+      setTimeout(() => {
+        if (isTTS) synthTarget = 0.2 + Math.random() * 0.35;
+      }, 70 + Math.random() * 80);
+    }
+  };
+
   utt.onend = () => {
     isTTS = false;
-    synthTarget = 0.12;
+    synthTarget = 0.1;
     setLabel('—', '');
     if (!isTx) setTimeout(startTTS, CONFIG.ttsPauseBetween);
   };
 
-  utt.onerror = () => {
+  utt.onerror = (e) => {
     isTTS = false;
     synthTarget = 0;
-    if (!isTx) setTimeout(startTTS, CONFIG.ttsPauseBetween);
+    // Don't retry on 'canceled' or 'interrupted' — those are intentional
+    if (!isTx && e.error !== 'canceled' && e.error !== 'interrupted') {
+      setTimeout(startTTS, CONFIG.ttsPauseBetween);
+    }
   };
 
-  window.speechSynthesis.speak(utt);
+  // Small delay before speaking helps Safari register the utterance reliably
+  setTimeout(() => {
+    try { window.speechSynthesis.speak(utt); }
+    catch(e) { setTimeout(startTTS, 1000); }
+  }, 60);
 }
 
 function stopTTS() {
   isTTS = false;
   synthTarget = 0;
-  window.speechSynthesis.cancel();
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -561,8 +612,8 @@ function drawLoop() {
 
     ctx.clearRect(0, 0, w, h);
 
-    // Smooth amplitude toward target
-    synthAmp += (synthTarget - synthAmp) * 0.06;
+    // Smooth amplitude toward target — faster response for punchy pulses
+    synthAmp += (synthTarget - synthAmp) * 0.14;
 
     // Glitch logic for synthetic wave
     glitchTimer++;
@@ -585,8 +636,8 @@ function drawLoop() {
 function drawSynthWave(ctx, w, h, glitch) {
   synthPhase += 0.016 + (glitch ? 0.08 : 0);
 
-  const amp   = synthAmp * (h * 0.38);
-  const alpha = 0.25 + synthAmp * 0.75;
+  const amp   = synthAmp * (h * 0.46);
+  const alpha = 0.2 + Math.min(synthAmp, 1) * 0.8;
   const color = `rgba(0, 255, 200, ${alpha})`;
 
   // Glow layer
@@ -649,11 +700,15 @@ function drawMicWave(ctx, w, h) {
 }
 
 function _micPath(ctx, data, len, w, h) {
-  const sw = w / len;
+  const sw   = w / len;
+  const GAIN = 2.4;  // amplify quiet speaking voices
+  const mid  = h / 2;
+
   ctx.beginPath();
   for (let i = 0; i < len; i++) {
-    const v = data[i] / 128.0;
-    const y = (v * h) / 2;
+    // Center raw value around 0, amplify, re-center on canvas
+    const deviation = (data[i] - 128) / 128.0;   // -1 to 1
+    const y = mid + deviation * GAIN * (h * 0.46);
     const x = i * sw;
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
@@ -685,7 +740,7 @@ function endTransmit() {
   isTx = false;
 
   const btn = document.getElementById('ptt');
-  btn.textContent = 'Talk to me';
+  btn.textContent = 'Click to Talk';
   btn.classList.remove('active');
 
   setStatus('Listening', false);
