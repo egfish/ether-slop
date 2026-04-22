@@ -195,13 +195,14 @@
     }
 
     #status {
-      font-size: 0.56rem;
-      letter-spacing: 0.4em;
+      font-size: 0.66rem;
+      letter-spacing: 0.28em;
       text-transform: uppercase;
-      color: var(--dim);
+      color: var(--bright);
       transition: color 0.4s;
       min-height: 1.2em;
       text-align: center;
+      padding: 0 8px;
     }
 
     #status.tx { color: var(--mic); }
@@ -297,8 +298,8 @@
   </div>
 
   <div id="controls">
-    <div id="status">Listening</div>
-    <button id="ptt">Click to Talk</button>
+    <div id="status">Click button with mouse to start transmitting</div>
+    <button id="ptt">Talk to Me</button>
   </div>
 </div>
 
@@ -650,7 +651,7 @@ function speakChunks(chunks, idx, voice, gen) {
     isTTS = true;
     synthTarget = 0.35;
     setLabel('Machine speaking', 'tts');
-    setStatus('Listening', false);
+    setStatus('Click button with mouse to start transmitting', false);
     markTTSActivity();
   };
 
@@ -852,18 +853,18 @@ function beginTransmit() {
   btn.textContent = 'Transmitting';
   btn.classList.add('active');
 
-  setStatus('Your voice is live', true);
-  setLabel('Your voice', 'mic');
+  setStatus('Click button with mouse to stop transmitting', true);
+  setLabel('Your voice is live', 'mic');
 }
 
 function endTransmit() {
   isTx = false;
 
   const btn = document.getElementById('ptt');
-  btn.textContent = 'Click to Talk';
+  btn.textContent = 'Talk to Me';
   btn.classList.remove('active');
 
-  setStatus('Listening', false);
+  setStatus('Click button with mouse to start transmitting', false);
   setLabel('—', '');
   synthTarget = 0.08;
 
