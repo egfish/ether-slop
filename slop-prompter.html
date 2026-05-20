@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ether Slop — Teleprompter</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #06060a;
+    --read:      #2d2d3a;   /* already-spoken / passed text */
+    --upcoming:  #c4c4d4;   /* text still to come */
+    --current:   #00ffc8;   /* current word (voice mode) */
+    --current-g: rgba(0,255,200,0.5);
+    --mic:       #ff7043;
+    --mic-g:     rgba(255,112,67,0.2);
+    --dim:       #4a4a5a;
+    --line:      #141420;
+    --font:      'Space Mono', monospace;
+  }
+
+  html, body { height: 100%; background: var(--bg); color: var(--upcoming); font-family: var(--font); overflow: hidden; }
+
+  /* Grain — kept very light so it never fights readability */
+  body::after {
+    content:''; position:fixed; inset:0; pointer-events:none; z-index:9999;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.025'/%3E%3C/svg%3E");
+    background-size:200px 200px;
+  }
+
+  /* ─── VIEWER ─────────────────────────────────────────────── */
+  #viewer {
+    position: fixed; inset: 0; overflow-y: scroll; scroll-behavior: auto;
+    scrollbar-width: none; -ms-overflow-style: none;
+  }
+  #viewer::-webkit-scrollbar { display: none; }
+
+  /* mirror transforms applied to inner so scroll math stays sane */
+  #flip {
+    transform-origin: center center;
+    transition: transform 0.25s ease;
+  }
+  #flip.mirror-h { transform: scaleX(-1); }
+  #flip.mirror-v { transform: scaleY(-1); }
+  #flip.mirror-h.mirror-v { transform: scale(-1,-1); }
+
+  #script {
+    max-width: 1600px;
+    margin: 0 auto;
+    padding: 50vh 4vw 60vh;          /* top/bottom pad lets first & last lines reach the reading line */
+    font-size: 4.2rem;
+    line-height: 1.5;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    word-spacing: 0.05em;
+  }
+
+  .w { color: var(--upcoming); transition: color 0.18s, text-shadow 0.18s; }
+  .w.read    { color: var(--read); }
+  .w.current { color: var(--current); text-shadow: 0 0 24px var(--current-g); }
+
+  /* bracketed stage direction / ad-lib cue — shown, but never matched against speech */
+  .cue {
+    color: rgba(255,112,67,0.72);
+    font-style: italic; font-weight: 400;
+    font-size: 0.78em; letter-spacing: 0;
+  }
+
+  /* speaker label like HOST: — shown as a name tag, not matched against speech */
+  .label {
+    color: #6f6f8c;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    font-size: 0.62em;
+    text-transform: uppercase;
+    vertical-align: 0.12em;
+  }
+
+  /* ─── READING LINE + EDGE FADES ──────────────────────────── */
+  #readingline {
+    position: fixed; left: 0; right: 0; height: 1px; z-index: 40;
+    background: linear-gradient(90deg, transparent, var(--current-g) 20%, var(--current-g) 80%, transparent);
+    opacity: 0; transition: opacity 0.3s;
+    pointer-events: none;
+  }
+  #readingline.show { opacity: 0.5; }
+  #readingline::before, #readingline::after {
+    content:''; position:absolute; top:50%; transform:translateY(-50%);
+    border-style: solid; border-color: transparent;
+  }
+  #readingline::before { left:0;  border-width:6px 0 6px 9px; border-left-color: var(--current); }
+  #readingline::after  { right:0; border-width:6px 9px 6px 0; border-right-color: var(--current); }
+
+  #fade-top, #fade-bot {
+    position: fixed; left:0; right:0; height: 22vh; z-index: 30; pointer-events: none;
+  }
+  #fade-top { top:0;    background: linear-gradient(var(--bg), transparent); }
+  #fade-bot { bottom:0; background: linear-gradient(transparent, var(--bg)); }
+
+  /* ─── CONTROL BAR ────────────────────────────────────────── */
+  #bar {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 18px;
+    background: rgba(6,6,10,0.92);
+    border-top: 1px solid var(--line);
+    backdrop-filter: blur(6px);
+    transition: transform 0.4s, opacity 0.4s;
+    font-size: 0.6rem; letter-spacing: 0.15em; text-transform: uppercase;
+    flex-wrap: wrap;
+  }
+  #bar.hidden-bar { transform: translateY(110%); opacity: 0; }
+
+  .grp { display: flex; align-items: center; gap: 6px; }
+  .grp .lbl { color: var(--dim); margin-right: 4px; }
+
+  button.ctl {
+    font-family: var(--font); font-size: 0.6rem; font-weight: 700;
+    letter-spacing: 0.15em; text-transform: uppercase;
+    background: transparent; color: var(--upcoming);
+    border: 1px solid var(--dim); padding: 8px 12px; cursor: pointer;
+    transition: border-color .15s, color .15s, background .15s;
+    -webkit-tap-highlight-color: transparent; white-space: nowrap;
+  }
+  button.ctl:hover  { border-color: var(--upcoming); }
+  button.ctl.on     { border-color: var(--current); color: var(--current); background: rgba(0,255,200,0.06); }
+  button.ctl.mic-on { border-color: var(--mic); color: var(--mic); background: var(--mic-g); animation: pulse 2s ease-in-out infinite; }
+
+  @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 var(--mic-g);} 50%{box-shadow:0 0 14px 2px var(--mic-g);} }
+
+  .spacer { flex: 1; }
+  .modeval { color: var(--current); min-width: 3.2em; text-align:center; display:inline-block; }
+
+  /* ─── EDIT PANEL ─────────────────────────────────────────── */
+  #edit {
+    position: fixed; inset: 0; z-index: 200; background: var(--bg);
+    display: none; flex-direction: column; padding: 4vh 6vw; gap: 16px;
+  }
+  #edit.open { display: flex; }
+  #edit h1 { font-size: 0.7rem; letter-spacing: 0.4em; text-transform: uppercase; color: var(--dim); font-weight: 400; }
+  #edit textarea {
+    flex: 1; width: 100%; resize: none;
+    background: #0b0b12; color: var(--upcoming); border: 1px solid var(--line);
+    font-family: var(--font); font-size: 1.05rem; line-height: 1.7; padding: 22px;
+    letter-spacing: 0.01em;
+  }
+  #edit textarea:focus { outline: none; border-color: var(--current); }
+  #edit .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  #edit .hint { font-size: 0.62rem; color: var(--dim); letter-spacing: 0.06em; line-height: 1.9; }
+  #edit .hint b { color: var(--upcoming); font-weight: 700; }
+
+  #toast {
+    position: fixed; top: 22px; left: 50%; transform: translateX(-50%);
+    z-index: 300; padding: 10px 18px; background: rgba(6,6,10,0.95);
+    border: 1px solid var(--mic); color: var(--mic);
+    font-size: 0.6rem; letter-spacing: 0.2em; text-transform: uppercase;
+    opacity: 0; transition: opacity 0.3s; pointer-events: none;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<!-- ── CONFIG ─────────────────────────────────────────────────
+     Drop a default script here so the page is performance-ready
+     on load. The performer can also paste/edit live (press E).
+-->
+<script>
+  const CONFIG = {
+    defaultScript:
+`Paste your script here, or press E to open the editor.
+
+Each blank line starts a new paragraph. The teleprompter scrolls so the line you're reading sits at the marker near the middle of the screen.
+
+Three ways to drive it. Voice mode listens through the mic and follows along, highlighting words as you say them and scrolling to keep pace. Auto mode rolls at a steady speed you can nudge up or down. Manual mode does nothing until you scroll, arrow, or tap.
+
+When the script calls for improvisation, wrap the direction in square brackets. [Ad-lib your answer about the weather here.] Voice-follow ignores the bracketed text entirely and picks you back up on the next written word — and if your riff runs long, press Enter or hit Next line to snap ahead.
+
+HOST: Speaker labels work the same way. Any word ending in a colon shows as a name tag but is never matched against speech, so the follow stays locked on the dialogue.
+
+GUEST: Exactly — you just read your line and it tracks normally.
+
+You don't need admin rights on the machine — this is just a web page. Open it in a browser, or host it on your GitHub Pages next to the installation.`,
+
+    // Reading line position, % from top of screen
+    readingLine: 40,
+
+    // Auto-scroll starting speed (pixels per frame at 60fps)
+    autoSpeed: 0.9,
+
+    // Speech recognition language
+    lang: 'en-US',
+  };
+</script>
+
+<div id="viewer">
+  <div id="flip"><div id="script"></div></div>
+</div>
+
+<div id="fade-top"></div>
+<div id="fade-bot"></div>
+<div id="readingline"></div>
+<div id="toast"></div>
+
+<div id="bar">
+  <div class="grp">
+    <span class="lbl">Mode</span>
+    <button class="ctl" id="m-manual">Manual</button>
+    <button class="ctl" id="m-auto">Auto</button>
+    <button class="ctl" id="m-voice">Voice</button>
+  </div>
+
+  <div class="grp">
+    <button class="ctl" id="resume" title="Jump to the next line — use to resume after an ad-lib">Next line ▸</button>
+  </div>
+
+  <div class="grp" id="auto-ctls">
+    <button class="ctl" id="play">Play ▶</button>
+    <span class="lbl">Speed</span>
+    <button class="ctl" id="sp-down">−</button>
+    <span class="modeval" id="sp-val">0.9</span>
+    <button class="ctl" id="sp-up">+</button>
+  </div>
+
+  <div class="grp">
+    <span class="lbl">Size</span>
+    <button class="ctl" id="fs-down">−</button>
+    <span class="modeval" id="fs-val">42</span>
+    <button class="ctl" id="fs-up">+</button>
+  </div>
+
+  <div class="grp">
+    <button class="ctl" id="mir-h">Flip H</button>
+    <button class="ctl" id="mir-v">Flip V</button>
+    <button class="ctl" id="reset">Top ⤒</button>
+  </div>
+
+  <div class="spacer"></div>
+
+  <div class="grp">
+    <button class="ctl" id="editbtn">Edit ✎</button>
+    <button class="ctl" id="full">Full ⛶</button>
+  </div>
+</div>
+
+<div id="edit">
+  <h1>Script</h1>
+  <textarea id="script-input" spellcheck="false" placeholder="Paste your script here…"></textarea>
+  <div class="row">
+    <button class="ctl on" id="apply">Load script</button>
+    <button class="ctl" id="cancel">Cancel</button>
+    <span class="hint">
+      <b>Space</b> play/pause &nbsp;·&nbsp; <b>Enter</b> next line &nbsp;·&nbsp; <b>← →</b> speed &nbsp;·&nbsp; <b>↑ ↓</b> nudge scroll &nbsp;·&nbsp;
+      <b>+ −</b> font &nbsp;·&nbsp; <b>V</b> voice &nbsp;·&nbsp; <b>M</b> mirror &nbsp;·&nbsp;
+      <b>R</b> reset &nbsp;·&nbsp; <b>E</b> edit &nbsp;·&nbsp; <b>H</b> hide bar &nbsp;·&nbsp; <b>F</b> fullscreen
+      <br>Wrap stage directions in <b>[square brackets]</b> — they show as cues but voice-follow skips them. A word ending in <b>:</b> shows as a speaker label and is skipped too.
+    </span>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════
+//  STATE
+// ════════════════════════════════════════════════════════════
+const viewer  = document.getElementById('viewer');
+const scriptE = document.getElementById('script');
+const flip    = document.getElementById('flip');
+const rline   = document.getElementById('readingline');
+
+let mode       = 'manual';         // manual | auto | voice
+let playing    = false;            // auto-scroll running
+let speed      = CONFIG.autoSpeed; // px/frame
+let fontPx     = 42;
+let tokens     = [];               // {raw, norm, el}
+let pointer    = 0;                // current word index (voice mode)
+let targetY    = 0;                // smoothed scroll target
+let recog      = null;
+let listening  = false;
+const norm = w => w.toLowerCase().replace(/[^a-z0-9']/g, '');
+
+// ════════════════════════════════════════════════════════════
+//  BUILD SCRIPT
+// ════════════════════════════════════════════════════════════
+function loadScript(text) {
+  scriptE.innerHTML = '';
+  tokens = [];
+  pointer = 0;
+
+  const paras = text.replace(/\r/g, '').split(/\n{2,}/);
+  paras.forEach(para => {
+    if (!para.trim()) return;
+    const p = document.createElement('p');
+    p.style.margin = '0 0 0.9em';
+
+    // split paragraph into [bracketed cues] and spoken segments
+    para.split(/(\[[^\]]*\])/).forEach(seg => {
+      if (!seg) return;
+      if (/^\[[^\]]*\]$/.test(seg)) {
+        // direction / ad-lib cue: visible to the performer, invisible to the matcher
+        const cue = document.createElement('span');
+        cue.className = 'cue';
+        cue.textContent = seg + ' ';
+        p.appendChild(cue);
+      } else {
+        seg.split(/\s+/).filter(Boolean).forEach(raw => {
+          const span = document.createElement('span');
+          span.textContent = raw + ' ';
+          if (/:$/.test(raw)) {
+            // speaker label (e.g. HOST:) — shown, but not matched against speech
+            span.className = 'label';
+          } else {
+            span.className = 'w';
+            const n = norm(raw);
+            if (n) tokens.push({ raw, norm: n, el: span });   // only spoken words are matchable
+          }
+          p.appendChild(span);
+        });
+      }
+    });
+
+    scriptE.appendChild(p);
+  });
+
+  viewer.scrollTop = 0;
+  targetY = 0;
+  updateHighlight();
+}
+
+// ════════════════════════════════════════════════════════════
+//  RENDER LOOP — eases scroll, drives auto mode
+// ════════════════════════════════════════════════════════════
+function lineY() { return window.innerHeight * (CONFIG.readingLine / 100); }
+
+function frame() {
+  requestAnimationFrame(frame);
+
+  if (mode === 'auto' && playing) {
+    targetY += speed;
+  }
+
+  const max = viewer.scrollHeight - viewer.clientHeight;
+  targetY = Math.max(0, Math.min(targetY, max));
+
+  // ease current scroll toward target (skip easing in pure manual so wheel feels native)
+  if (mode === 'manual') {
+    targetY = viewer.scrollTop;          // follow native scroll
+  } else {
+    const cur = viewer.scrollTop;
+    const next = cur + (targetY - cur) * 0.16;
+    viewer.scrollTop = Math.abs(next - targetY) < 0.4 ? targetY : next;
+  }
+}
+requestAnimationFrame(frame);
+
+// ════════════════════════════════════════════════════════════
+//  VOICE FOLLOW
+// ════════════════════════════════════════════════════════════
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+function buildRecognition() {
+  if (!SR) return null;
+  const r = new SR();
+  r.continuous = true;
+  r.interimResults = true;
+  r.lang = CONFIG.lang;
+
+  r.onresult = (e) => {
+    let spokenStr = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      spokenStr += e.results[i][0].transcript + ' ';
+    }
+    const spoken = spokenStr.trim().split(/\s+/).map(norm).filter(Boolean);
+    if (spoken.length) advanceTo(spoken);
+  };
+
+  // Chrome stops listening after a stretch of silence / ~60s — restart it.
+  r.onend = () => { if (listening) { try { r.start(); } catch (_) {} } };
+  r.onerror = (ev) => {
+    if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+      toast('Mic blocked — allow access & reload');
+      stopVoice();
+    }
+  };
+  return r;
+}
+
+// Fuzzy forward-matcher: looks for recently-spoken words inside a
+// forward window of the script and advances the pointer to the best
+// match. Only ever moves forward, so a misheard word or repeat won't
+// throw it backward. If nothing matches, it holds position.
+function advanceTo(spoken) {
+  const recent = spoken.slice(-5);
+  const WINDOW = 28;
+  const end = Math.min(pointer + WINDOW, tokens.length);
+  let best = -1, bestScore = 0;
+
+  for (let p = pointer; p < end; p++) {
+    let score = 0;
+    for (let k = 0; k < recent.length; k++) {
+      const sIdx = p - (recent.length - 1 - k);
+      if (sIdx >= 0 && sIdx < tokens.length && tokens[sIdx].norm === recent[k]) score++;
+    }
+    // weight the most-recent spoken word landing exactly on p
+    if (tokens[p].norm === recent[recent.length - 1]) score += 0.5;
+    // gentle bias toward nearer positions to avoid jumping ahead on a stray match
+    score -= (p - pointer) * 0.02;
+    if (score > bestScore) { bestScore = score; best = p; }
+  }
+
+  if (best >= 0 && bestScore >= 1) {
+    pointer = Math.max(pointer, best);
+    updateHighlight();
+    scrollToPointer();
+  }
+}
+
+function updateHighlight() {
+  if (mode !== 'voice') {
+    tokens.forEach(t => t.el.classList.remove('read', 'current'));
+    return;
+  }
+  tokens.forEach((t, i) => {
+    t.el.classList.toggle('read', i < pointer);
+    t.el.classList.toggle('current', i === pointer);
+  });
+}
+
+function scrollToPointer() {
+  const el = tokens[pointer] && tokens[pointer].el;
+  if (!el) return;
+  targetY = el.offsetTop + el.offsetHeight / 2 - lineY();
+}
+
+// Manual override: jump the pointer to the first spoken word of the next
+// paragraph. The reacquire is automatic when the performer resumes reading,
+// but if an ad-lib runs long (or the matcher stalls), this snaps ahead.
+function resumeNext() {
+  if (!tokens.length) return;
+  const idx = Math.min(pointer, tokens.length - 1);
+  const curP = tokens[idx].el.parentElement;
+  let target = -1;
+  for (let i = idx + 1; i < tokens.length; i++) {
+    if (tokens[i].el.parentElement !== curP) { target = i; break; }
+  }
+  pointer = target === -1 ? tokens.length - 1 : target;
+  updateHighlight();
+  scrollToPointer();
+}
+
+function startVoice() {
+  if (!SR) { toast('Voice needs Chrome — use Auto in Firefox'); return; }
+  if (!recog) recog = buildRecognition();
+  if (!recog) return;
+  listening = true;
+  try { recog.start(); } catch (_) {}
+  document.getElementById('m-voice').classList.add('mic-on');
+  rline.classList.add('show');
+  toast('Listening');
+}
+
+function stopVoice() {
+  listening = false;
+  if (recog) { try { recog.stop(); } catch (_) {} }
+  document.getElementById('m-voice').classList.remove('mic-on');
+}
+
+// ════════════════════════════════════════════════════════════
+//  MODE SWITCHING
+// ════════════════════════════════════════════════════════════
+function setMode(m) {
+  if (m === mode && m !== 'voice') return;
+  // tear down old
+  if (mode === 'voice') stopVoice();
+  playing = false;
+  setPlayLabel();
+
+  mode = m;
+  ['manual', 'auto', 'voice'].forEach(x =>
+    document.getElementById('m-' + x).classList.toggle('on', x === m));
+
+  document.getElementById('auto-ctls').style.opacity = (m === 'auto') ? '1' : '0.35';
+  rline.classList.toggle('show', m !== 'manual');
+
+  updateHighlight();
+
+  if (m === 'voice') {
+    // align pointer to whatever's currently near the reading line
+    syncPointerToScroll();
+    startVoice();
+  }
+}
+
+// When entering voice mode mid-script, set pointer to the word nearest the line
+function syncPointerToScroll() {
+  const aim = viewer.scrollTop + lineY();
+  let nearest = 0, dist = Infinity;
+  for (let i = 0; i < tokens.length; i++) {
+    const y = tokens[i].el.offsetTop;
+    const d = Math.abs(y - aim);
+    if (d < dist) { dist = d; nearest = i; }
+  }
+  pointer = nearest;
+  updateHighlight();
+}
+
+// ════════════════════════════════════════════════════════════
+//  CONTROLS
+// ════════════════════════════════════════════════════════════
+function setPlayLabel() {
+  document.getElementById('play').textContent = playing ? 'Pause ⏸' : 'Play ▶';
+  document.getElementById('play').classList.toggle('on', playing);
+}
+function togglePlay() {
+  if (mode !== 'auto') setMode('auto');
+  playing = !playing;
+  setPlayLabel();
+}
+function setSpeed(v) {
+  speed = Math.max(0.1, Math.min(8, Math.round(v * 10) / 10));
+  document.getElementById('sp-val').textContent = speed.toFixed(1);
+}
+function setFont(px) {
+  fontPx = Math.max(20, Math.min(110, px));
+  scriptE.style.fontSize = fontPx + 'px';
+  document.getElementById('fs-val').textContent = fontPx;
+  if (mode === 'voice') scrollToPointer();
+}
+function nudge(px) {
+  targetY += px;
+  if (mode === 'manual') viewer.scrollTop += px;
+}
+
+document.getElementById('m-manual').onclick = () => setMode('manual');
+document.getElementById('m-auto').onclick   = () => setMode('auto');
+document.getElementById('m-voice').onclick  = () => setMode('voice');
+document.getElementById('resume').onclick   = resumeNext;
+document.getElementById('play').onclick     = togglePlay;
+document.getElementById('sp-up').onclick     = () => setSpeed(speed + 0.1);
+document.getElementById('sp-down').onclick   = () => setSpeed(speed - 0.1);
+document.getElementById('fs-up').onclick      = () => setFont(fontPx + 4);
+document.getElementById('fs-down').onclick    = () => setFont(fontPx - 4);
+document.getElementById('mir-h').onclick = (e) => { flip.classList.toggle('mirror-h'); e.target.classList.toggle('on'); };
+document.getElementById('mir-v').onclick = (e) => { flip.classList.toggle('mirror-v'); e.target.classList.toggle('on'); };
+document.getElementById('reset').onclick = () => { targetY = 0; viewer.scrollTop = 0; pointer = 0; updateHighlight(); };
+document.getElementById('full').onclick  = () => {
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen?.();
+  else document.exitFullscreen?.();
+};
+
+// ── Edit panel ──
+const editPanel = document.getElementById('edit');
+const input     = document.getElementById('script-input');
+function openEdit()  { input.value = currentText(); editPanel.classList.add('open'); input.focus(); }
+function closeEdit() { editPanel.classList.remove('open'); }
+let _rawText = CONFIG.defaultScript;
+function currentText() { return _rawText; }
+document.getElementById('editbtn').onclick = openEdit;
+document.getElementById('cancel').onclick  = closeEdit;
+document.getElementById('apply').onclick   = () => {
+  _rawText = input.value;
+  loadScript(_rawText);
+  closeEdit();
+  toast('Script loaded');
+};
+
+// ── Toast ──
+let _toastT;
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(_toastT);
+  _toastT = setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+// ── Hide bar ──
+let barHidden = false;
+function toggleBar() {
+  barHidden = !barHidden;
+  document.getElementById('bar').classList.toggle('hidden-bar', barHidden);
+}
+
+// ════════════════════════════════════════════════════════════
+//  KEYBOARD
+// ════════════════════════════════════════════════════════════
+document.addEventListener('keydown', (e) => {
+  if (editPanel.classList.contains('open')) {
+    if (e.key === 'Escape') closeEdit();
+    return;                       // let typing through in the textarea
+  }
+  switch (e.key) {
+    case ' ':        e.preventDefault(); togglePlay(); break;
+    case 'Enter':    e.preventDefault(); resumeNext(); break;
+    case 'ArrowRight': setSpeed(speed + 0.1); break;
+    case 'ArrowLeft':  setSpeed(speed - 0.1); break;
+    case 'ArrowDown':  e.preventDefault(); nudge(60); break;
+    case 'ArrowUp':    e.preventDefault(); nudge(-60); break;
+    case '+': case '=': setFont(fontPx + 4); break;
+    case '-': case '_': setFont(fontPx - 4); break;
+    case 'v': case 'V': setMode(mode === 'voice' ? 'manual' : 'voice'); break;
+    case 'm': case 'M': flip.classList.toggle('mirror-h'); document.getElementById('mir-h').classList.toggle('on'); break;
+    case 'r': case 'R': targetY = 0; viewer.scrollTop = 0; pointer = 0; updateHighlight(); break;
+    case 'e': case 'E': openEdit(); break;
+    case 'h': case 'H': toggleBar(); break;
+    case 'f': case 'F': document.getElementById('full').click(); break;
+  }
+});
+
+// manual wheel/drag keeps targetY in sync so mode switches don't jump
+viewer.addEventListener('scroll', () => { if (mode === 'manual') targetY = viewer.scrollTop; });
+
+// ════════════════════════════════════════════════════════════
+//  INIT
+// ════════════════════════════════════════════════════════════
+rline.style.top = CONFIG.readingLine + '%';
+setFont(fontPx);
+setSpeed(speed);
+loadScript(_rawText);
+setMode('manual');
+if (!SR) toast('Voice unavailable in this browser');
+</script>
+</body>
+</html>
