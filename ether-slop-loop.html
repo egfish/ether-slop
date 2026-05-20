@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<!-- Launch fullscreen (no Safari chrome) when Added to Home Screen -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Ether Slop — Loop</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    width: 100%;
+    background: #000;
+    overflow: hidden;
+    position: fixed;
+    inset: 0;
+    overscroll-behavior: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    font-family: 'Space Mono', ui-monospace, monospace;
+  }
+
+  #stage {
+    position: fixed;
+    inset: 0;
+    background: #000;
+    touch-action: none;          /* we own vertical drag, kill native scroll */
+    overflow: hidden;
+  }
+
+  #track {
+    position: absolute;
+    inset: 0;
+    will-change: transform;
+  }
+
+  .slide {
+    position: absolute;
+    inset: 0;
+    background: #000;
+    will-change: transform;
+  }
+
+  .slide video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    /* object-fit set per CONFIG.fit at runtime */
+    background: #000;
+    pointer-events: none;        /* no long-press callout / scrubber */
+  }
+
+  /* ─── MUTE / UNMUTE TOGGLE ────────────────────────────────────── */
+  #mute {
+    position: fixed;
+    z-index: 90;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
+    right:  calc(env(safe-area-inset-right, 0px) + 18px);
+    width: 46px;
+    height: 46px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(6, 6, 10, 0.45);
+    border: 1px solid rgba(176, 176, 196, 0.25);
+    border-radius: 50%;
+    color: #b0b0c4;
+    cursor: pointer;
+    opacity: 0.45;                /* subtle — see CONFIG.muteButton to remove entirely */
+    -webkit-tap-highlight-color: transparent;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    transition: opacity .3s, color .2s, border-color .2s;
+  }
+  #mute:hover, #mute:active { opacity: 1; }
+  #mute[hidden] { display: none; }
+  #mute svg { width: 20px; height: 20px; display: block; }
+  #mute .icon-on  { display: none; }
+  #mute .icon-off { display: block; }
+  #mute:not(.muted) .icon-on  { display: block; }
+  #mute:not(.muted) .icon-off { display: none; }
+  #mute:not(.muted) {
+    color: #00ffc8;
+    border-color: rgba(0, 255, 200, 0.4);
+  }
+
+  /* ─── START / SETUP GATE ──────────────────────────────────────── */
+  #gate {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: #06060a;
+    color: #4a4a5a;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    padding: 32px;
+    text-align: center;
+    transition: opacity 0.5s;
+  }
+  #gate.fade-out { opacity: 0; pointer-events: none; }
+  #gate.hidden   { display: none; }
+
+  #gate-title {
+    font-size: 0.65rem;
+    letter-spacing: 0.5em;
+    text-transform: uppercase;
+  }
+  #gate-body {
+    font-size: 0.66rem;
+    letter-spacing: 0.08em;
+    line-height: 2;
+    max-width: 320px;
+  }
+  #gate-btn {
+    font-family: inherit;
+    font-size: 0.72rem;
+    letter-spacing: 0.3em;
+    font-weight: 700;
+    text-transform: uppercase;
+    background: transparent;
+    border: 1px solid #00ffc8;
+    color: #00ffc8;
+    padding: 14px 36px;
+    cursor: pointer;
+    transition: background 0.2s;
+    margin-top: 6px;
+  }
+  #gate-btn:hover { background: rgba(0,255,200,0.14); }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     CONFIG — edit before deploying
+     ═══════════════════════════════════════════════════════════════ -->
+<script>
+const CONFIG = {
+
+  // 1) Explicit playlist. If non-empty, this wins and nothing else is scanned.
+  //    e.g. ['videos/01.mp4', 'videos/02.mp4', 'videos/03.mp4']
+  videos: [],
+
+  // 2) Auto-scan a served folder. When this page is served by a static
+  //    server that returns a directory listing (e.g. python3 -m http.server),
+  //    every video file in this path is picked up automatically — drop a clip
+  //    in the folder, reload, it's in the loop. Set to null to disable.
+  autoIndexUrl: 'videos/',
+
+  // 3) If neither of the above yields files, a one-time file picker appears.
+
+  fit:   'cover',     // 'cover' = full-bleed (may crop) · 'contain' = full frame, letterboxed
+  sound: true,        // true = one-tap start gate (required for audio on iOS)
+                      // false = silent muted autoplay, zero touch required
+
+  muteButton: true,   // show a small, subtle corner mute/unmute toggle
+
+  shuffle: false,     // randomize order on load
+
+  swipeThreshold: 60,   // px of drag to trigger an advance
+  flickVelocity: 0.45,  // px/ms — a quick flick advances even if short
+  animMs: 320,          // swipe transition duration
+};
+</script>
+
+<div id="gate">
+  <p id="gate-title">Ether Slop</p>
+  <p id="gate-body">Tap to begin.</p>
+  <button id="gate-btn">Begin</button>
+  <input id="picker" type="file" accept="video/*" multiple style="display:none">
+</div>
+
+<div id="stage"><div id="track"></div></div>
+
+<button id="mute" aria-label="Toggle sound" hidden>
+  <svg class="icon-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <polygon points="4 9 8 9 13 5 13 19 8 15 4 15" fill="currentColor" stroke="none"></polygon>
+    <path d="M16.5 8.5a4 4 0 0 1 0 7"></path>
+    <path d="M19 6a8 8 0 0 1 0 12"></path>
+  </svg>
+  <svg class="icon-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <polygon points="4 9 8 9 13 5 13 19 8 15 4 15" fill="currentColor" stroke="none"></polygon>
+    <line x1="17" y1="9" x2="22" y2="14"></line>
+    <line x1="22" y1="9" x2="17" y2="14"></line>
+  </svg>
+</button>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════════════════
+let order      = [];      // array of video URLs
+let N          = 0;
+let cur        = 0;       // logical index of the centered clip
+let committing = false;   // animation in flight — ignore input
+let soundOn    = false;   // becomes true after a user gesture if CONFIG.sound
+
+const slides = [];        // exactly 3: {el, video, idx}  ·  [0]=prev [1]=cur [2]=next
+const track  = document.getElementById('track');
+const stage  = document.getElementById('stage');
+
+// ═══════════════════════════════════════════════════════════════════
+//  SOURCE RESOLUTION
+// ═══════════════════════════════════════════════════════════════════
+async function resolveSources() {
+  if (CONFIG.videos && CONFIG.videos.length) return CONFIG.videos.slice();
+  if (CONFIG.autoIndexUrl) {
+    try {
+      const list = await scrapeIndex(CONFIG.autoIndexUrl);
+      if (list.length) return list;
+    } catch (_) { /* fall through to picker */ }
+  }
+  return null; // signal: need the picker
+}
+
+// Parse a static-server directory listing for video files.
+async function scrapeIndex(url) {
+  const res = await fetch(url, { cache: 'no-store' });
+  if (!res.ok) throw new Error('index fetch failed');
+  const html = await res.text();
+  const doc  = new DOMParser().parseFromString(html, 'text/html');
+  const base = new URL(url, location.href);
+  const vids = [...doc.querySelectorAll('a')]
+    .map(a => a.getAttribute('href'))
+    .filter(h => h && /\.(mp4|m4v|mov|webm)$/i.test(h))
+    .map(h => new URL(h, base).href);
+  const uniq = [...new Set(vids)];
+  uniq.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+  return uniq;
+}
+
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  SLIDE RECYCLER  (only 3 <video> elements ever exist → flat memory)
+// ═══════════════════════════════════════════════════════════════════
+function makeSlide() {
+  const el = document.createElement('div');
+  el.className = 'slide';
+  const v = document.createElement('video');
+  v.playsInline = true;
+  v.setAttribute('playsinline', '');
+  v.setAttribute('webkit-playsinline', '');
+  v.loop = true;
+  v.muted = true;
+  v.preload = 'auto';
+  v.disablePictureInPicture = true;
+  v.setAttribute('disablepictureinpicture', '');
+  v.setAttribute('x-webkit-airplay', 'deny');
+  v.tabIndex = -1;
+  v.style.objectFit = CONFIG.fit;
+  el.appendChild(v);
+  return { el, video: v, idx: -1 };
+}
+
+function idxAt(off) { return (((cur + off) % N) + N) % N; }
+
+function setSlide(slide, wantIdx) {
+  if (slide.idx === wantIdx) return;     // already loaded — don't reload
+  slide.idx = wantIdx;
+  slide.video.src = order[wantIdx];
+  slide.video.load();
+}
+
+function layout() {
+  slides[0].el.style.transform = 'translateY(-100%)';
+  slides[1].el.style.transform = 'translateY(0)';
+  slides[2].el.style.transform = 'translateY(100%)';
+}
+
+function playCenter() {
+  slides.forEach((s, i) => {
+    const v = s.video;
+    if (i === 1) {
+      v.muted = !soundOn;
+      const p = v.play();
+      if (p && p.catch) p.catch(() => {});
+    } else {
+      try { v.pause(); v.currentTime = 0; } catch (_) {}
+      v.muted = true;
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  ADVANCE  (dir = 1 → next / swipe up · dir = -1 → prev / swipe down)
+// ═══════════════════════════════════════════════════════════════════
+function commit(dir) {
+  if (committing || N === 0) return;
+  committing = true;
+  track.style.transition = `transform ${CONFIG.animMs}ms cubic-bezier(.4,0,.2,1)`;
+  track.style.transform  = `translateY(${dir * -1 * window.innerHeight}px)`;
+
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    track.removeEventListener('transitionend', finish);
+    recycle(dir);
+  };
+  track.addEventListener('transitionend', finish);
+  setTimeout(finish, CONFIG.animMs + 120); // fallback if transitionend doesn't fire
+}
+
+function recycle(dir) {
+  if (dir === 1) {                       // next becomes center
+    const r = slides.shift(); slides.push(r);
+    cur = (cur + 1) % N;
+    setSlide(r, idxAt(1));               // recycled element = new "next"
+  } else {                               // prev becomes center
+    const r = slides.pop(); slides.unshift(r);
+    cur = (cur - 1 + N) % N;
+    setSlide(r, idxAt(-1));              // recycled element = new "prev"
+  }
+  track.style.transition = 'none';
+  track.style.transform  = 'translateY(0)';
+  layout();
+  void track.offsetHeight;               // force reflow so 'none' lands
+  playCenter();
+  committing = false;
+}
+
+function snapBack() {
+  track.style.transition = `transform 250ms ease`;
+  track.style.transform  = 'translateY(0)';
+  setTimeout(() => { track.style.transition = 'none'; }, 270);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  GESTURES  (pointer drag · wheel + arrow keys for desktop testing)
+// ═══════════════════════════════════════════════════════════════════
+let dragging = false, startY = 0, lastY = 0, lastT = 0, dy = 0, vy = 0;
+
+function bindGestures() {
+  stage.addEventListener('pointerdown', (e) => {
+    if (committing) return;
+    dragging = true;
+    startY = lastY = e.clientY;
+    lastT = performance.now();
+    dy = 0; vy = 0;
+    track.style.transition = 'none';
+    try { stage.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+
+  window.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const now = performance.now();
+    dy = e.clientY - startY;
+    const ddt = now - lastT;
+    if (ddt > 0) vy = (e.clientY - lastY) / ddt;
+    lastY = e.clientY; lastT = now;
+    track.style.transform = `translateY(${dy}px)`;
+  });
+
+  const release = () => {
+    if (!dragging) return;
+    dragging = false;
+    const advance = Math.abs(dy) > CONFIG.swipeThreshold || Math.abs(vy) > CONFIG.flickVelocity;
+    if (advance) commit(dy < 0 ? 1 : -1);
+    else snapBack();
+  };
+  window.addEventListener('pointerup', release);
+  window.addEventListener('pointercancel', release);
+
+  // Desktop testing only
+  let wheelLock = false;
+  window.addEventListener('wheel', (e) => {
+    if (committing || wheelLock || Math.abs(e.deltaY) < 8) return;
+    wheelLock = true;
+    setTimeout(() => { wheelLock = false; }, CONFIG.animMs + 80);
+    commit(e.deltaY > 0 ? 1 : -1);
+  }, { passive: true });
+
+  window.addEventListener('keydown', (e) => {
+    if (committing) return;
+    if (e.key === 'ArrowUp') commit(-1);
+    else if (e.key === 'ArrowDown' || e.key === ' ') commit(1);
+  });
+}
+
+// Kill the iOS long-press menu entirely
+window.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// ═══════════════════════════════════════════════════════════════════
+//  GATE
+// ═══════════════════════════════════════════════════════════════════
+function showGate(mode) {
+  const gate  = document.getElementById('gate');
+  const btn   = document.getElementById('gate-btn');
+  const pick  = document.getElementById('picker');
+  const body  = document.getElementById('gate-body');
+  gate.classList.remove('hidden', 'fade-out');
+
+  if (mode === 'pick') {
+    body.textContent = 'Select the video files to begin.';
+    btn.textContent  = 'Choose videos';
+    btn.onclick = () => pick.click();
+    pick.onchange = () => {
+      const files = [...pick.files].filter(f =>
+        f.type.startsWith('video/') || /\.(mp4|m4v|mov|webm)$/i.test(f.name));
+      if (!files.length) return;
+      files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+      order = files.map(f => URL.createObjectURL(f));
+      N = order.length;
+      soundOn = CONFIG.sound;          // the file selection counts as the gesture
+      dismissGate();
+      start();
+    };
+  } else { // 'tap'
+    body.textContent = 'Tap to begin.';
+    btn.textContent  = 'Begin';
+    btn.onclick = () => { soundOn = CONFIG.sound; dismissGate(); start(); };
+  }
+}
+
+function dismissGate() {
+  const gate = document.getElementById('gate');
+  gate.classList.add('fade-out');
+  setTimeout(() => gate.classList.add('hidden'), 500);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  MUTE / UNMUTE TOGGLE
+// ═══════════════════════════════════════════════════════════════════
+function setupMute() {
+  const btn = document.getElementById('mute');
+  if (!CONFIG.muteButton) { btn.remove(); return; }
+  btn.hidden = false;
+
+  const sync = () => btn.classList.toggle('muted', !soundOn);
+  sync();
+
+  btn.addEventListener('click', () => {
+    soundOn = !soundOn;
+    // This tap is a valid user gesture, so unmuting works even after a
+    // silent autoplay launch. Apply immediately to the centered clip;
+    // playCenter() keeps it in sync on every subsequent swipe.
+    const v = slides[1] && slides[1].video;
+    if (v) {
+      v.muted = !soundOn;
+      if (soundOn) { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
+    }
+    sync();
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  START / BOOT
+// ═══════════════════════════════════════════════════════════════════
+function start() {
+  if (N === 0) return;
+  setSlide(slides[0], idxAt(-1));
+  setSlide(slides[1], idxAt(0));
+  setSlide(slides[2], idxAt(1));
+  layout();
+  playCenter();
+  bindGestures();
+  setupMute();
+}
+
+async function boot() {
+  for (let i = 0; i < 3; i++) slides.push(makeSlide());
+  slides.forEach(s => track.appendChild(s.el));
+
+  const src = await resolveSources();
+  if (src && src.length) {
+    order = CONFIG.shuffle ? shuffle(src) : src;
+    N = order.length;
+    if (CONFIG.sound) showGate('tap');
+    else { dismissGate(); start(); }   // muted autoplay, no touch needed
+  } else {
+    showGate('pick');                  // no files found — let the operator pick
+  }
+}
+
+boot();
+</script>
+</body>
+</html>
