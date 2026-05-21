@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Ether Slop — The Gaze</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+  <!-- face-api.js (vladmandic fork — actively maintained, modern TF.js). Exposes global `faceapi`. -->
+  <script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #06060a;
+      --tts:        #00ffc8;          /* teal — UNTRACKED / released */
+      --tts-glow:   rgba(0, 255, 200, 0.18);
+      --mic:        #ff7043;          /* orange — TRACKED / the grip */
+      --mic-glow:   rgba(255, 112, 67, 0.22);
+      --hot:        #ff3b30;          /* hot red — full lock pulse */
+      --dim:        #1e1e2a;
+      --mid:        #4a4a5a;
+      --bright:     #b0b0c4;
+      --font:       'Space Mono', monospace;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--bright);
+      font-family: var(--font);
+      overflow: hidden;
+    }
+
+    /* Grain overlay (shared with audience.html) */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 999;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+      background-size: 200px 200px;
+    }
+
+    /* ─── PERMISSION GATE ───────────────────────────────────────── */
+    #gate {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      z-index: 200;
+      padding: 32px;
+      text-align: center;
+      transition: opacity 0.6s;
+    }
+    #gate.fade-out { opacity: 0; pointer-events: none; }
+
+    #gate-title {
+      font-size: 0.65rem;
+      letter-spacing: 0.5em;
+      color: var(--mid);
+      text-transform: uppercase;
+    }
+    #gate-body {
+      font-size: 0.68rem;
+      color: var(--mid);
+      letter-spacing: 0.08em;
+      line-height: 2;
+      max-width: 320px;
+    }
+    #gate-btn {
+      font-family: var(--font);
+      font-size: 0.72rem;
+      letter-spacing: 0.3em;
+      font-weight: 700;
+      text-transform: uppercase;
+      background: transparent;
+      border: 1px solid var(--tts);
+      color: var(--tts);
+      padding: 14px 36px;
+      cursor: pointer;
+      transition: background 0.2s;
+      margin-top: 4px;
+    }
+    #gate-btn:hover { background: var(--tts-glow); }
+    #gate-btn:disabled { opacity: 0.4; cursor: default; }
+
+    #device-select {
+      font-family: var(--font);
+      font-size: 0.6rem;
+      letter-spacing: 0.12em;
+      background: transparent;
+      color: var(--bright);
+      border: 1px solid var(--dim);
+      padding: 9px 12px;
+      max-width: 320px;
+      display: none;
+    }
+    #device-select:focus { outline: 1px solid var(--mid); }
+
+    #gate-status {
+      font-size: 0.6rem;
+      letter-spacing: 0.12em;
+      color: var(--mid);
+      min-height: 1.2em;
+    }
+    #gate-status.err { color: var(--mic); }
+
+    /* ─── MAIN APP ──────────────────────────────────────────────── */
+    #app {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100dvh;
+      height: 100vh;
+      opacity: 0;
+      transition: opacity 0.8s 0.2s;
+    }
+    #app.visible { opacity: 1; }
+
+    /* 9:16 portrait frame, letterboxed inside whatever the display is */
+    #frame {
+      position: relative;
+      height: 100%;
+      aspect-ratio: 9 / 16;
+      max-width: 100%;
+      background: #000;
+      overflow: hidden;
+    }
+    /* If the monitor is itself portrait 9:16 this just fills it. */
+
+    #cam {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    #overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    /* Edge vignette to seat the UI into the frame */
+    #frame::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      box-shadow: inset 0 0 120px 20px rgba(0,0,0,0.55);
+      z-index: 2;
+    }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+<!-- ─────────────────────────────────────────────────────────────────
+  CONFIGURATION — edit before deploying
+  ───────────────────────────────────────────────────────────────── -->
+<script>
+  const CONFIG = {
+
+    // Leave empty to auto-pick a device (the gate offers a dropdown).
+    // To hard-lock a specific wired cam, paste its deviceId here.
+    deviceId: '',
+
+    // Mirror the feed like a real mirror (recommended for a makeup station
+    // so the participant's movements map intuitively). Detection still runs
+    // on the true, un-mirrored frame — only the drawing is flipped.
+    mirror: true,
+
+    // Detector sensitivity. LOWER = the machine gives up more easily
+    // (more forgiving of dazzle); HIGHER = harder to lose. 0.5 is a good
+    // middle. Dial this for the room's lighting during tech.
+    scoreThreshold: 0.5,
+
+    // Detector input resolution. 224 is fast; 320/416 are more sensitive
+    // and slower. On the Mac Mini, 320 is a reasonable balance.
+    inputSize: 320,
+
+    // How long (ms) a face must be absent before we declare it LOST.
+    // A small hold stops the box from strobing on momentary dropouts.
+    lossHoldMs: 450,
+
+    // face-api model weights. The default CDN path ships with the package.
+    // If you'd rather self-host (more reliable for a permanent install),
+    // copy the /model folder into your repo and point this at it, e.g.
+    // 'models/'  →  egfish.github.io/ether-slop/models/
+    modelUrl: 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model',
+
+  };
+</script>
+
+<!-- ─── PERMISSION GATE ──────────────────────────────────────────── -->
+<div id="gate">
+  <p id="gate-title">Ether Slop · The Gaze</p>
+  <p id="gate-body">This work watches you. Apply your camouflage and learn how long you can stay unseen.<br><br>It requires access to the camera.</p>
+  <select id="device-select"></select>
+  <button id="gate-btn">Allow access</button>
+  <p id="gate-status"></p>
+</div>
+
+<!-- ─── MAIN APP ─────────────────────────────────────────────────── -->
+<div id="app">
+  <div id="frame">
+    <video id="cam" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════════════════
+let stream      = null;
+let modelsReady = false;
+
+// Latest raw detection (in intrinsic video pixels) + smoothed render copies
+let latest      = null;     // { box, score, points:[{x,y}×68] } | null
+let smoothBox   = null;     // {x,y,w,h} in DISPLAY (css) px, lerped
+let smoothPts   = null;     // [{x,y}×68] in DISPLAY px, lerped
+let dispScore   = 0;        // smoothed confidence 0..1
+
+// Tracking state machine
+let lastSeen    = 0;
+let tracked     = false;
+let stateSince  = performance.now();
+
+// Confidence history for the sparkline
+const HISTORY_LEN = 140;
+const history   = new Array(HISTORY_LEN).fill(0);
+
+// Animation phases
+let scanPhase   = 0;
+let reticleSpin = 0;
+
+// ═══════════════════════════════════════════════════════════════════
+//  GATE
+// ═══════════════════════════════════════════════════════════════════
+const gate    = document.getElementById('gate');
+const gBtn    = document.getElementById('gate-btn');
+const gSel    = document.getElementById('device-select');
+const gStat   = document.getElementById('gate-status');
+
+function setGateStatus(t, err = false) {
+  gStat.textContent = t;
+  gStat.classList.toggle('err', err);
+}
+
+gBtn.addEventListener('click', start);
+
+async function start() {
+  gBtn.disabled = true;
+  setGateStatus('Requesting camera…');
+
+  try {
+    stream = await openCamera(CONFIG.deviceId || gSel.value || '');
+  } catch (err) {
+    setGateStatus('Camera access denied. Enable it in browser settings and reload.', true);
+    gBtn.disabled = false;
+    return;
+  }
+
+  // Now that we have permission, labels are populated — offer a device picker.
+  await populateDevices();
+
+  const cam = document.getElementById('cam');
+  cam.srcObject = stream;
+  if (CONFIG.mirror) cam.style.transform = 'scaleX(-1)';
+  await cam.play().catch(() => {});
+
+  setGateStatus('Loading detector…');
+  try {
+    await loadModels();
+  } catch (err) {
+    setGateStatus('Detector failed to load. Check the network / modelUrl.', true);
+    gBtn.disabled = false;
+    return;
+  }
+
+  // Reveal
+  gate.classList.add('fade-out');
+  setTimeout(() => gate.classList.add('hidden'), 700);
+  const app = document.getElementById('app');
+  app.classList.remove('hidden');
+  requestAnimationFrame(() => app.classList.add('visible'));
+
+  detectLoop();
+  renderLoop();
+}
+
+async function openCamera(deviceId) {
+  const video = {
+    width:  { ideal: 1080 },
+    height: { ideal: 1920 },     // request portrait; cover handles the rest
+    facingMode: 'user',
+  };
+  if (deviceId) { video.deviceId = { exact: deviceId }; delete video.facingMode; }
+  return navigator.mediaDevices.getUserMedia({ audio: false, video });
+}
+
+async function populateDevices() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === 'videoinput');
+    if (cams.length > 1 && !CONFIG.deviceId) {
+      gSel.innerHTML = '';
+      const current = stream.getVideoTracks()[0]?.getSettings()?.deviceId;
+      cams.forEach((c, i) => {
+        const opt = document.createElement('option');
+        opt.value = c.deviceId;
+        opt.textContent = c.label || ('Camera ' + (i + 1));
+        if (c.deviceId === current) opt.selected = true;
+        gSel.appendChild(opt);
+      });
+      gSel.style.display = 'block';
+      // Switch cameras live when changed (re-open the stream).
+      gSel.onchange = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        stream = await openCamera(gSel.value);
+        document.getElementById('cam').srcObject = stream;
+      };
+    }
+  } catch (_) { /* non-fatal */ }
+}
+
+async function loadModels() {
+  await faceapi.nets.tinyFaceDetector.loadFromUri(CONFIG.modelUrl);
+  await faceapi.nets.faceLandmark68TinyNet.loadFromUri(CONFIG.modelUrl);
+  modelsReady = true;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  DETECTION LOOP  (runs as fast as the machine allows, async)
+// ═══════════════════════════════════════════════════════════════════
+async function detectLoop() {
+  const cam = document.getElementById('cam');
+  if (modelsReady && cam.readyState >= 2 && cam.videoWidth) {
+    const opts = new faceapi.TinyFaceDetectorOptions({
+      inputSize: CONFIG.inputSize,
+      scoreThreshold: CONFIG.scoreThreshold,
+    });
+    let res = null;
+    try {
+      res = await faceapi.detectSingleFace(cam, opts).withFaceLandmarks(true);
+    } catch (_) { res = null; }
+
+    if (res) {
+      latest = {
+        box:   res.detection.box,                         // intrinsic px
+        score: res.detection.score,
+        points: res.landmarks.positions.map(p => ({ x: p.x, y: p.y })),
+      };
+      lastSeen = performance.now();
+    } else {
+      latest = null;
+    }
+    updateStateMachine();
+  }
+  requestAnimationFrame(detectLoop);
+}
+
+function updateStateMachine() {
+  const now = performance.now();
+  const present = (now - lastSeen) < CONFIG.lossHoldMs;
+  if (present && !tracked)  { tracked = true;  stateSince = now; }
+  if (!present && tracked)  { tracked = false; stateSince = now; }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  COORDINATE MAPPING  (intrinsic video px → display css px, w/ mirror)
+// ═══════════════════════════════════════════════════════════════════
+function mapper() {
+  const cam = document.getElementById('cam');
+  const frame = document.getElementById('frame');
+  const W = frame.clientWidth, H = frame.clientHeight;
+  const vW = cam.videoWidth || 1, vH = cam.videoHeight || 1;
+  const scale = Math.max(W / vW, H / vH);   // object-fit: cover
+  const ox = (W - vW * scale) / 2;
+  const oy = (H - vH * scale) / 2;
+  return (px, py) => {
+    let x = px * scale + ox;
+    const y = py * scale + oy;
+    if (CONFIG.mirror) x = W - x;
+    return { x, y };
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  RENDER LOOP  (rAF — smooth UI even between detections)
+// ═══════════════════════════════════════════════════════════════════
+function renderLoop() {
+  requestAnimationFrame(renderLoop);
+
+  const canvas = document.getElementById('overlay');
+  const frame  = document.getElementById('frame');
+  const ctx    = canvas.getContext('2d');
+  const dpr    = window.devicePixelRatio || 1;
+  const W = frame.clientWidth, H = frame.clientHeight;
+
+  if (canvas.width !== W * dpr || canvas.height !== H * dpr) {
+    canvas.width  = W * dpr;
+    canvas.height = H * dpr;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  scanPhase   = (scanPhase + 0.0035) % 1;
+  reticleSpin += 0.012;
+
+  // Smooth confidence toward target (target decays to 0 when lost)
+  const targetScore = tracked && latest ? latest.score : 0;
+  dispScore += (targetScore - dispScore) * 0.18;
+
+  // ── Smooth geometry toward latest detection ──
+  if (latest && tracked) {
+    const map = mapper();
+    const c1 = map(latest.box.x, latest.box.y);
+    const c2 = map(latest.box.x + latest.box.width, latest.box.y + latest.box.height);
+    const tx = Math.min(c1.x, c2.x), ty = Math.min(c1.y, c2.y);
+    const tw = Math.abs(c2.x - c1.x), th = Math.abs(c2.y - c1.y);
+
+    if (!smoothBox) smoothBox = { x: tx, y: ty, w: tw, h: th };
+    smoothBox.x += (tx - smoothBox.x) * 0.35;
+    smoothBox.y += (ty - smoothBox.y) * 0.35;
+    smoothBox.w += (tw - smoothBox.w) * 0.35;
+    smoothBox.h += (th - smoothBox.h) * 0.35;
+
+    const mapped = latest.points.map(p => map(p.x, p.y));
+    if (!smoothPts || smoothPts.length !== mapped.length) {
+      smoothPts = mapped.map(p => ({ x: p.x, y: p.y }));
+    } else {
+      for (let i = 0; i < mapped.length; i++) {
+        smoothPts[i].x += (mapped[i].x - smoothPts[i].x) * 0.4;
+        smoothPts[i].y += (mapped[i].y - smoothPts[i].y) * 0.4;
+      }
+    }
+  }
+
+  // Push to history sparkline
+  history.push(tracked && latest ? latest.score : 0);
+  history.shift();
+
+  // ── Draw ──
+  if (tracked && smoothBox) {
+    drawLockUI(ctx, W, H, smoothBox, smoothPts);
+  } else {
+    smoothBox = null;
+    smoothPts = null;
+  }
+  drawHUD(ctx, W, H);
+  drawSparkline(ctx, W, H);
+  drawScanline(ctx, W, H);
+}
+
+// ── The hostile lock: box, reticle, mesh ──
+function drawLockUI(ctx, W, H, b, pts) {
+  // intensity ramps with confidence — full lock leans toward hot red
+  const heat = Math.min(dispScore, 1);
+  const col  = heat > 0.78
+    ? 'rgba(255, 59, 48,'   // --hot
+    : 'rgba(255, 112, 67,'; // --mic
+  const a = 0.55 + heat * 0.45;
+
+  // Corner brackets (surveillance lock)
+  const len = Math.min(b.w, b.h) * 0.26;
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = col + a + ')';
+  ctx.shadowColor = col + '0.9)';
+  ctx.shadowBlur = 12;
+  const corners = [
+    [b.x, b.y, 1, 1], [b.x + b.w, b.y, -1, 1],
+    [b.x, b.y + b.h, 1, -1], [b.x + b.w, b.y + b.h, -1, -1],
+  ];
+  corners.forEach(([cx, cy, sx, sy]) => {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy + sy * len);
+    ctx.lineTo(cx, cy);
+    ctx.lineTo(cx + sx * len, cy);
+    ctx.stroke();
+  });
+  ctx.shadowBlur = 0;
+
+  // Faint full box
+  ctx.strokeStyle = col + (a * 0.18) + ')';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(b.x, b.y, b.w, b.h);
+
+  // Center reticle
+  const ccx = b.x + b.w / 2, ccy = b.y + b.h / 2;
+  const r = Math.min(b.w, b.h) * 0.07;
+  ctx.strokeStyle = col + a + ')';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.arc(ccx, ccy, r, 0, Math.PI * 2); ctx.stroke();
+  // rotating ticks
+  ctx.save();
+  ctx.translate(ccx, ccy);
+  ctx.rotate(reticleSpin);
+  for (let i = 0; i < 4; i++) {
+    ctx.rotate(Math.PI / 2);
+    ctx.beginPath();
+    ctx.moveTo(0, -r - 4);
+    ctx.lineTo(0, -r - 4 - 7);
+    ctx.stroke();
+  }
+  ctx.restore();
+  // crosshair
+  ctx.strokeStyle = col + (a * 0.5) + ')';
+  ctx.beginPath();
+  ctx.moveTo(ccx - r * 2.2, ccy); ctx.lineTo(ccx - r * 0.5, ccy);
+  ctx.moveTo(ccx + r * 0.5, ccy); ctx.lineTo(ccx + r * 2.2, ccy);
+  ctx.moveTo(ccx, ccy - r * 2.2); ctx.lineTo(ccx, ccy - r * 0.5);
+  ctx.moveTo(ccx, ccy + r * 0.5); ctx.lineTo(ccx, ccy + r * 2.2);
+  ctx.stroke();
+
+  // Landmark mesh
+  if (pts) drawMesh(ctx, pts, col, a);
+}
+
+// 68-point contours + nodes
+function drawMesh(ctx, p, col, a) {
+  const groups = [
+    [0, 16],   // jaw
+    [17, 21],  // R brow
+    [22, 26],  // L brow
+    [27, 30],  // nose bridge
+    [31, 35],  // nose base
+    [36, 41, true], // R eye (closed)
+    [42, 47, true], // L eye (closed)
+    [48, 59, true], // outer lip (closed)
+    [60, 67, true], // inner lip (closed)
+  ];
+  ctx.strokeStyle = col + (a * 0.4) + ')';
+  ctx.lineWidth = 1;
+  groups.forEach(([s, e, close]) => {
+    ctx.beginPath();
+    for (let i = s; i <= e; i++) {
+      if (!p[i]) continue;
+      if (i === s) ctx.moveTo(p[i].x, p[i].y);
+      else ctx.lineTo(p[i].x, p[i].y);
+    }
+    if (close) ctx.closePath();
+    ctx.stroke();
+  });
+  // nodes
+  ctx.fillStyle = col + a + ')';
+  for (const pt of p) {
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, 1.3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// ── Top status + bottom evasion timer ──
+function drawHUD(ctx, W, H) {
+  const now = performance.now();
+  const dur = (now - stateSince) / 1000;
+  const tealA = 'rgba(0, 255, 200,';
+  const orngA = 'rgba(255, 112, 67,';
+
+  ctx.textBaseline = 'top';
+
+  if (tracked) {
+    // hostile header
+    const pulse = 0.6 + Math.sin(now / 220) * 0.4;
+    ctx.font = '700 13px ' + getFont();
+    ctx.fillStyle = orngA + pulse + ')';
+    ctx.textAlign = 'left';
+    drawLetterspaced(ctx, 'TRACKING', 16, 16, 4);
+
+    ctx.font = '400 10px ' + getFont();
+    ctx.fillStyle = orngA + '0.8)';
+    drawLetterspaced(ctx, 'CONFIDENCE ' + Math.round(dispScore * 100) + '%', 16, 36, 2);
+
+    ctx.textAlign = 'right';
+    drawLetterspaced(ctx, 'HELD ' + fmt(dur), W - 16, 16, 2, 'right');
+  } else {
+    // released header
+    ctx.font = '700 13px ' + getFont();
+    ctx.fillStyle = tealA + '0.9)';
+    ctx.textAlign = 'left';
+    drawLetterspaced(ctx, 'NO SUBJECT', 16, 16, 4);
+
+    ctx.font = '400 10px ' + getFont();
+    ctx.fillStyle = tealA + '0.7)';
+    drawLetterspaced(ctx, 'UNRECOGNIZED', 16, 36, 2);
+
+    // big evasion timer, center-bottom
+    ctx.font = '700 26px ' + getFont();
+    ctx.fillStyle = tealA + (0.7 + Math.sin(now / 600) * 0.3) + ')';
+    ctx.textAlign = 'center';
+    ctx.shadowColor = tealA + '0.6)';
+    ctx.shadowBlur = 16;
+    drawLetterspaced(ctx, 'UNSEEN ' + fmt(dur), W / 2, H - 96, 3, 'center');
+    ctx.shadowBlur = 0;
+  }
+}
+
+// ── Confidence sparkline along the bottom edge ──
+function drawSparkline(ctx, W, H) {
+  const y0 = H - 40, hh = 26;
+  ctx.strokeStyle = 'rgba(74,74,90,0.3)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(16, y0); ctx.lineTo(W - 16, y0); ctx.stroke();
+
+  const span = W - 32;
+  ctx.beginPath();
+  for (let i = 0; i < history.length; i++) {
+    const x = 16 + (i / (history.length - 1)) * span;
+    const y = y0 - history[i] * hh;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = tracked ? 'rgba(255,112,67,0.85)' : 'rgba(0,255,200,0.6)';
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = ctx.strokeStyle;
+  ctx.shadowBlur = 6;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  ctx.font = '400 8px ' + getFont();
+  ctx.fillStyle = 'rgba(74,74,90,0.7)';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+  drawLetterspaced(ctx, 'DETECTION CONFIDENCE', 16, H - 14, 2);
+}
+
+// ── Drifting scan line over the whole frame ──
+function drawScanline(ctx, W, H) {
+  const y = scanPhase * H;
+  const g = ctx.createLinearGradient(0, y - 30, 0, y + 30);
+  const c = tracked ? '255,112,67' : '0,255,200';
+  g.addColorStop(0,   `rgba(${c},0)`);
+  g.addColorStop(0.5, `rgba(${c},0.06)`);
+  g.addColorStop(1,   `rgba(${c},0)`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, y - 30, W, 60);
+  ctx.strokeStyle = `rgba(${c},0.12)`;
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════════════════
+function getFont() { return "'Space Mono', monospace"; }
+
+function fmt(sec) {
+  const s = Math.max(0, sec);
+  const m = Math.floor(s / 60);
+  const r = Math.floor(s % 60);
+  return m + ':' + String(r).padStart(2, '0');
+}
+
+// Manual letter-spacing (canvas letterSpacing support is uneven across browsers)
+function drawLetterspaced(ctx, text, x, y, sp, align = 'left') {
+  const widths = [...text].map(ch => ctx.measureText(ch).width + sp);
+  const total = widths.reduce((a, b) => a + b, 0) - sp;
+  let cx = align === 'right' ? x - total : align === 'center' ? x - total / 2 : x;
+  const prevAlign = ctx.textAlign;
+  ctx.textAlign = 'left';
+  [...text].forEach((ch, i) => { ctx.fillText(ch, cx, y); cx += widths[i]; });
+  ctx.textAlign = prevAlign;
+}
+</script>
+</body>
+</html>
