@@ -196,9 +196,33 @@
     // middle. Dial this for the room's lighting during tech.
     scoreThreshold: 0.5,
 
-    // Detector input resolution. 224 is fast; 320/416 are more sensitive
-    // and slower. On the Mac Mini, 320 is a reasonable balance.
-    inputSize: 320,
+    // Detector input resolution. Lower = much faster (cost scales ~with the
+    // square), higher = more sensitive. 224 is a good speed/quality balance
+    // for an old machine; drop to 160 if it's still chugging, raise to 320 if
+    // you have headroom and need it to hold faces from further away.
+    inputSize: 224,
+
+    // ── Performance (for the old Mac Mini) ───────────────────────────
+    // Cap how often face detection runs, in ms. The drawing interpolates
+    // smoothly between detections, so 90ms (~11/sec) looks fluid while
+    // leaving the CPU free to render. Raise toward 150 if still slow.
+    detectIntervalMs: 90,
+
+    // The detector doesn't need a huge frame — it downsamples to inputSize
+    // anyway. We shrink the analysed image so its long edge is at most this
+    // many px before detection. Smaller = faster. 480 is plenty.
+    detMaxEdge: 480,
+
+    // Cap the canvas pixel ratio. Retina (2x) quadruples fill cost for no
+    // real benefit on a video feed. 1 is fastest; bump to 1.5 if edges look
+    // soft and the machine can spare it.
+    maxDpr: 1,
+
+    // ── UI size ──────────────────────────────────────────────────────
+    // Master multiplier for all HUD line weights, text, and margins, so the
+    // overlay reads boldly against a big vertical image. 1 = baseline; the
+    // default below is already enlarged. Nudge to taste.
+    uiScale: 1.6,
 
     // How long (ms) a face must be absent before we declare it LOST.
     // A small hold stops the box from strobing on momentary dropouts.
@@ -237,10 +261,10 @@
 let stream      = null;
 let modelsReady = false;
 
-// Offscreen upright buffers (raw frame rotated to vertical). Detection runs
-// on detBuf (un-mirrored); the visible feed is painted from feedBuf.
+// Offscreen upright buffer for detection (raw frame rotated to vertical,
+// un-mirrored, shrunk for speed). The visible feed is drawn straight from
+// the <video> in drawFeed().
 let detBuf = null, detBufCtx = null;
-let feedBuf = null, feedBufCtx = null;
 let detW = 1, detH = 1;     // upright buffer dims — also the detector's coord space
 
 // Latest raw detection (in intrinsic video pixels) + smoothed render copies
@@ -261,6 +285,9 @@ const history   = new Array(HISTORY_LEN).fill(0);
 // Animation phases
 let scanPhase   = 0;
 let reticleSpin = 0;
+
+// UI scale factor — recomputed each render from frame size × CONFIG.uiScale.
+let uiK = 1;
 
 // ═══════════════════════════════════════════════════════════════════
 //  GATE
@@ -361,12 +388,18 @@ async function loadModels() {
 //  DETECTION LOOP  (runs as fast as the machine allows, async)
 // ═══════════════════════════════════════════════════════════════════
 async function detectLoop() {
+  const t0 = performance.now();
   const cam = document.getElementById('cam');
   if (modelsReady && cam.readyState >= 2 && cam.videoWidth) {
     // Rotate the raw frame upright into detBuf, then detect on that. Faces
     // are now vertical, so TinyFaceDetector works normally, and the returned
     // box/landmarks are already in the upright coord space the mapper expects.
-    const { uW, uH } = uprightDims(cam.videoWidth, cam.videoHeight);
+    // The buffer is shrunk to detMaxEdge first — the detector downsamples to
+    // inputSize anyway, so analysing a smaller image is free accuracy-wise.
+    let { uW, uH } = uprightDims(cam.videoWidth, cam.videoHeight);
+    const cap = CONFIG.detMaxEdge || 480;
+    const long = Math.max(uW, uH);
+    if (long > cap) { const r = cap / long; uW = Math.round(uW * r); uH = Math.round(uH * r); }
     detW = uW; detH = uH;
     if (!detBuf) { detBuf = document.createElement('canvas'); detBufCtx = detBuf.getContext('2d'); }
     if (detBuf.width !== uW || detBuf.height !== uH) { detBuf.width = uW; detBuf.height = uH; }
@@ -393,7 +426,10 @@ async function detectLoop() {
     }
     updateStateMachine();
   }
-  requestAnimationFrame(detectLoop);
+  // Throttle: next pass after detectIntervalMs, minus the time this one took.
+  // Decoupled from rAF so a slow detection never starves the render loop.
+  const gap = (CONFIG.detectIntervalMs || 0) - (performance.now() - t0);
+  setTimeout(detectLoop, Math.max(0, gap));
 }
 
 function updateStateMachine() {
@@ -414,14 +450,17 @@ function uprightDims(vW, vH) {
   return (r === 90 || r === 270) ? { uW: vH, uH: vW } : { uW: vW, uH: vH };
 }
 
-// Paint the raw video rotated upright, exactly filling a uW×uH context.
-// Pure rotation — no cropping happens here; the cover crop lives in the
-// mapper/feed-draw so detection and display share one source of truth.
+// Paint the raw video rotated upright, filling a uW×uH context. The buffer
+// keeps the upright aspect ratio, so one uniform scale fills it (this also
+// lets the detection buffer be shrunk for speed without distortion).
 function drawUpright(ctx, uW, uH, cam) {
+  const vW = cam.videoWidth, vH = cam.videoHeight;
+  const r = rot();
+  const s = uW / ((r === 90 || r === 270) ? vH : vW);
   ctx.save();
   ctx.translate(uW / 2, uH / 2);
-  ctx.rotate(rot() * Math.PI / 180);
-  ctx.drawImage(cam, -cam.videoWidth / 2, -cam.videoHeight / 2, cam.videoWidth, cam.videoHeight);
+  ctx.rotate(r * Math.PI / 180);
+  ctx.drawImage(cam, -vW * s / 2, -vH * s / 2, vW * s, vH * s);
   ctx.restore();
 }
 
@@ -446,20 +485,20 @@ function mapper() {
   };
 }
 
-// Paint the upright feed onto the overlay, cover-fit + mirrored to match the
-// mapper exactly, so the lock-box sits on the face.
+// Paint the live feed onto the overlay, rotated upright, cover-fit and
+// mirrored to match the mapper exactly so the lock-box sits on the face.
+// Drawn straight from the <video> (one drawImage) to keep it cheap.
 function drawFeed(ctx, W, H) {
   const cam = document.getElementById('cam');
   if (!cam.videoWidth) return;
   const { uW, uH } = uprightDims(cam.videoWidth, cam.videoHeight);
-  if (!feedBuf) { feedBuf = document.createElement('canvas'); feedBufCtx = feedBuf.getContext('2d'); }
-  if (feedBuf.width !== uW || feedBuf.height !== uH) { feedBuf.width = uW; feedBuf.height = uH; }
-  drawUpright(feedBufCtx, uW, uH, cam);
-
-  const { scale, ox, oy } = coverParams(uW, uH, W, H);
+  const { scale } = coverParams(uW, uH, W, H);   // cover centres at (W/2,H/2)
+  const vW = cam.videoWidth, vH = cam.videoHeight;
   ctx.save();
-  if (CONFIG.mirror) { ctx.translate(W, 0); ctx.scale(-1, 1); }
-  ctx.drawImage(feedBuf, ox, oy, uW * scale, uH * scale);
+  if (CONFIG.mirror) { ctx.translate(W, 0); ctx.scale(-1, 1); }  // horizontal screen flip
+  ctx.translate(W / 2, H / 2);
+  ctx.rotate(rot() * Math.PI / 180);
+  ctx.drawImage(cam, -vW * scale / 2, -vH * scale / 2, vW * scale, vH * scale);
   ctx.restore();
 }
 
@@ -472,8 +511,12 @@ function renderLoop() {
   const canvas = document.getElementById('overlay');
   const frame  = document.getElementById('frame');
   const ctx    = canvas.getContext('2d');
-  const dpr    = window.devicePixelRatio || 1;
+  const dpr    = Math.min(window.devicePixelRatio || 1, CONFIG.maxDpr || 1);
   const W = frame.clientWidth, H = frame.clientHeight;
+
+  // UI scale: proportional to the frame's short edge (W, since it's portrait)
+  // so the HUD reads boldly on a big vertical image, × the CONFIG multiplier.
+  uiK = Math.max(0.8, Math.min((W / 430) * (CONFIG.uiScale || 1), 6));
 
   if (canvas.width !== W * dpr || canvas.height !== H * dpr) {
     canvas.width  = W * dpr;
@@ -544,10 +587,10 @@ function drawLockUI(ctx, W, H, b, pts) {
 
   // Corner brackets (surveillance lock)
   const len = Math.min(b.w, b.h) * 0.26;
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 2 * uiK;
   ctx.strokeStyle = col + a + ')';
   ctx.shadowColor = col + '0.9)';
-  ctx.shadowBlur = 12;
+  ctx.shadowBlur = 12 * uiK;
   const corners = [
     [b.x, b.y, 1, 1], [b.x + b.w, b.y, -1, 1],
     [b.x, b.y + b.h, 1, -1], [b.x + b.w, b.y + b.h, -1, -1],
@@ -563,14 +606,14 @@ function drawLockUI(ctx, W, H, b, pts) {
 
   // Faint full box
   ctx.strokeStyle = col + (a * 0.18) + ')';
-  ctx.lineWidth = 1;
+  ctx.lineWidth = 1 * uiK;
   ctx.strokeRect(b.x, b.y, b.w, b.h);
 
   // Center reticle
   const ccx = b.x + b.w / 2, ccy = b.y + b.h / 2;
   const r = Math.min(b.w, b.h) * 0.07;
   ctx.strokeStyle = col + a + ')';
-  ctx.lineWidth = 1.2;
+  ctx.lineWidth = 1.2 * uiK;
   ctx.beginPath(); ctx.arc(ccx, ccy, r, 0, Math.PI * 2); ctx.stroke();
   // rotating ticks
   ctx.save();
@@ -579,8 +622,8 @@ function drawLockUI(ctx, W, H, b, pts) {
   for (let i = 0; i < 4; i++) {
     ctx.rotate(Math.PI / 2);
     ctx.beginPath();
-    ctx.moveTo(0, -r - 4);
-    ctx.lineTo(0, -r - 4 - 7);
+    ctx.moveTo(0, -r - 4 * uiK);
+    ctx.lineTo(0, -r - (4 + 7) * uiK);
     ctx.stroke();
   }
   ctx.restore();
@@ -611,7 +654,7 @@ function drawMesh(ctx, p, col, a) {
     [60, 67, true], // inner lip (closed)
   ];
   ctx.strokeStyle = col + (a * 0.4) + ')';
-  ctx.lineWidth = 1;
+  ctx.lineWidth = 1 * uiK;
   groups.forEach(([s, e, close]) => {
     ctx.beginPath();
     for (let i = s; i <= e; i++) {
@@ -626,7 +669,7 @@ function drawMesh(ctx, p, col, a) {
   ctx.fillStyle = col + a + ')';
   for (const pt of p) {
     ctx.beginPath();
-    ctx.arc(pt.x, pt.y, 1.3, 0, Math.PI * 2);
+    ctx.arc(pt.x, pt.y, 1.3 * uiK, 0, Math.PI * 2);
     ctx.fill();
   }
 }
@@ -639,82 +682,86 @@ function drawHUD(ctx, W, H) {
   const orngA = 'rgba(255, 112, 67,';
 
   ctx.textBaseline = 'top';
+  const M = 16 * uiK;          // edge margin
+  const M2 = 36 * uiK;         // second-line offset
 
   if (tracked) {
     // hostile header
     const pulse = 0.6 + Math.sin(now / 220) * 0.4;
-    ctx.font = '700 13px ' + getFont();
+    ctx.font = '700 ' + (13 * uiK) + 'px ' + getFont();
     ctx.fillStyle = orngA + pulse + ')';
     ctx.textAlign = 'left';
-    drawLetterspaced(ctx, 'TRACKING', 16, 16, 4);
+    drawLetterspaced(ctx, 'TRACKING', M, M, 4 * uiK);
 
-    ctx.font = '400 10px ' + getFont();
+    ctx.font = '400 ' + (10 * uiK) + 'px ' + getFont();
     ctx.fillStyle = orngA + '0.8)';
-    drawLetterspaced(ctx, 'CONFIDENCE ' + Math.round(dispScore * 100) + '%', 16, 36, 2);
+    drawLetterspaced(ctx, 'CONFIDENCE ' + Math.round(dispScore * 100) + '%', M, M2, 2 * uiK);
 
     ctx.textAlign = 'right';
-    drawLetterspaced(ctx, 'HELD ' + fmt(dur), W - 16, 16, 2, 'right');
+    drawLetterspaced(ctx, 'HELD ' + fmt(dur), W - M, M, 2 * uiK, 'right');
   } else {
     // released header
-    ctx.font = '700 13px ' + getFont();
+    ctx.font = '700 ' + (13 * uiK) + 'px ' + getFont();
     ctx.fillStyle = tealA + '0.9)';
     ctx.textAlign = 'left';
-    drawLetterspaced(ctx, 'NO SUBJECT', 16, 16, 4);
+    drawLetterspaced(ctx, 'NO SUBJECT', M, M, 4 * uiK);
 
-    ctx.font = '400 10px ' + getFont();
+    ctx.font = '400 ' + (10 * uiK) + 'px ' + getFont();
     ctx.fillStyle = tealA + '0.7)';
-    drawLetterspaced(ctx, 'UNRECOGNIZED', 16, 36, 2);
+    drawLetterspaced(ctx, 'UNRECOGNIZED', M, M2, 2 * uiK);
 
     // big evasion timer, center-bottom
-    ctx.font = '700 26px ' + getFont();
+    ctx.font = '700 ' + (26 * uiK) + 'px ' + getFont();
     ctx.fillStyle = tealA + (0.7 + Math.sin(now / 600) * 0.3) + ')';
     ctx.textAlign = 'center';
     ctx.shadowColor = tealA + '0.6)';
-    ctx.shadowBlur = 16;
-    drawLetterspaced(ctx, 'UNSEEN ' + fmt(dur), W / 2, H - 96, 3, 'center');
+    ctx.shadowBlur = 16 * uiK;
+    drawLetterspaced(ctx, 'UNSEEN ' + fmt(dur), W / 2, H - 96 * uiK, 3 * uiK, 'center');
     ctx.shadowBlur = 0;
   }
 }
 
 // ── Confidence sparkline along the bottom edge ──
 function drawSparkline(ctx, W, H) {
-  const y0 = H - 40, hh = 26;
+  const M = 16 * uiK;
+  const y0 = H - 40 * uiK, hh = 26 * uiK;
   ctx.strokeStyle = 'rgba(74,74,90,0.3)';
-  ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(16, y0); ctx.lineTo(W - 16, y0); ctx.stroke();
+  ctx.lineWidth = 1 * uiK;
+  ctx.beginPath(); ctx.moveTo(M, y0); ctx.lineTo(W - M, y0); ctx.stroke();
 
-  const span = W - 32;
+  const span = W - 2 * M;
   ctx.beginPath();
   for (let i = 0; i < history.length; i++) {
-    const x = 16 + (i / (history.length - 1)) * span;
+    const x = M + (i / (history.length - 1)) * span;
     const y = y0 - history[i] * hh;
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
   ctx.strokeStyle = tracked ? 'rgba(255,112,67,0.85)' : 'rgba(0,255,200,0.6)';
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = 1.5 * uiK;
   ctx.shadowColor = ctx.strokeStyle;
-  ctx.shadowBlur = 6;
+  ctx.shadowBlur = 6 * uiK;
   ctx.stroke();
   ctx.shadowBlur = 0;
 
-  ctx.font = '400 8px ' + getFont();
+  ctx.font = '400 ' + (8 * uiK) + 'px ' + getFont();
   ctx.fillStyle = 'rgba(74,74,90,0.7)';
   ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
-  drawLetterspaced(ctx, 'DETECTION CONFIDENCE', 16, H - 14, 2);
+  drawLetterspaced(ctx, 'DETECTION CONFIDENCE', M, H - 14 * uiK, 2 * uiK);
 }
 
 // ── Drifting scan line over the whole frame ──
 function drawScanline(ctx, W, H) {
+  const band = 30 * uiK;
   const y = scanPhase * H;
-  const g = ctx.createLinearGradient(0, y - 30, 0, y + 30);
+  const g = ctx.createLinearGradient(0, y - band, 0, y + band);
   const c = tracked ? '255,112,67' : '0,255,200';
   g.addColorStop(0,   `rgba(${c},0)`);
   g.addColorStop(0.5, `rgba(${c},0.06)`);
   g.addColorStop(1,   `rgba(${c},0)`);
   ctx.fillStyle = g;
-  ctx.fillRect(0, y - 30, W, 60);
+  ctx.fillRect(0, y - band, W, band * 2);
   ctx.strokeStyle = `rgba(${c},0.12)`;
-  ctx.lineWidth = 1;
+  ctx.lineWidth = 1 * uiK;
   ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
 }
 
