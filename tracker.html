@@ -140,6 +140,10 @@
       height: 100%;
       object-fit: cover;
       display: block;
+      /* Source only — the upright (rotated/mirrored) feed is painted onto
+         #overlay so it stays pixel-locked to the detector. Kept in the DOM
+         and playing (visibility:hidden still decodes + is drawable). */
+      visibility: hidden;
     }
 
     #overlay {
@@ -179,6 +183,13 @@
     // so the participant's movements map intuitively). Detection still runs
     // on the true, un-mirrored frame — only the drawing is flipped.
     mirror: true,
+
+    // Camera rotation in degrees — corrects a sideways-mounted camera. The
+    // feed AND the detector both run on the rotated-upright image, so faces
+    // are found normally and the lock-box stays aligned. Use 90 or 270 for a
+    // camera on its side, 180 for upside-down, 0 to disable. If the picture
+    // leans the WRONG way, swap 90 <-> 270 during tech; nothing else changes.
+    rotation: 90,
 
     // Detector sensitivity. LOWER = the machine gives up more easily
     // (more forgiving of dazzle); HIGHER = harder to lose. 0.5 is a good
@@ -225,6 +236,12 @@
 // ═══════════════════════════════════════════════════════════════════
 let stream      = null;
 let modelsReady = false;
+
+// Offscreen upright buffers (raw frame rotated to vertical). Detection runs
+// on detBuf (un-mirrored); the visible feed is painted from feedBuf.
+let detBuf = null, detBufCtx = null;
+let feedBuf = null, feedBufCtx = null;
+let detW = 1, detH = 1;     // upright buffer dims — also the detector's coord space
 
 // Latest raw detection (in intrinsic video pixels) + smoothed render copies
 let latest      = null;     // { box, score, points:[{x,y}×68] } | null
@@ -277,7 +294,6 @@ async function start() {
 
   const cam = document.getElementById('cam');
   cam.srcObject = stream;
-  if (CONFIG.mirror) cam.style.transform = 'scaleX(-1)';
   await cam.play().catch(() => {});
 
   setGateStatus('Loading detector…');
@@ -347,18 +363,27 @@ async function loadModels() {
 async function detectLoop() {
   const cam = document.getElementById('cam');
   if (modelsReady && cam.readyState >= 2 && cam.videoWidth) {
+    // Rotate the raw frame upright into detBuf, then detect on that. Faces
+    // are now vertical, so TinyFaceDetector works normally, and the returned
+    // box/landmarks are already in the upright coord space the mapper expects.
+    const { uW, uH } = uprightDims(cam.videoWidth, cam.videoHeight);
+    detW = uW; detH = uH;
+    if (!detBuf) { detBuf = document.createElement('canvas'); detBufCtx = detBuf.getContext('2d'); }
+    if (detBuf.width !== uW || detBuf.height !== uH) { detBuf.width = uW; detBuf.height = uH; }
+    drawUpright(detBufCtx, uW, uH, cam);
+
     const opts = new faceapi.TinyFaceDetectorOptions({
       inputSize: CONFIG.inputSize,
       scoreThreshold: CONFIG.scoreThreshold,
     });
     let res = null;
     try {
-      res = await faceapi.detectSingleFace(cam, opts).withFaceLandmarks(true);
+      res = await faceapi.detectSingleFace(detBuf, opts).withFaceLandmarks(true);
     } catch (_) { res = null; }
 
     if (res) {
       latest = {
-        box:   res.detection.box,                         // intrinsic px
+        box:   res.detection.box,                         // upright buffer px
         score: res.detection.score,
         points: res.landmarks.positions.map(p => ({ x: p.x, y: p.y })),
       };
@@ -379,22 +404,63 @@ function updateStateMachine() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  COORDINATE MAPPING  (intrinsic video px → display css px, w/ mirror)
+//  ROTATION  (raw frame → upright buffer, shared by detect + feed)
+// ═══════════════════════════════════════════════════════════════════
+function rot() { return ((CONFIG.rotation % 360) + 360) % 360; }
+
+// Upright buffer dims: width/height swap for quarter turns.
+function uprightDims(vW, vH) {
+  const r = rot();
+  return (r === 90 || r === 270) ? { uW: vH, uH: vW } : { uW: vW, uH: vH };
+}
+
+// Paint the raw video rotated upright, exactly filling a uW×uH context.
+// Pure rotation — no cropping happens here; the cover crop lives in the
+// mapper/feed-draw so detection and display share one source of truth.
+function drawUpright(ctx, uW, uH, cam) {
+  ctx.save();
+  ctx.translate(uW / 2, uH / 2);
+  ctx.rotate(rot() * Math.PI / 180);
+  ctx.drawImage(cam, -cam.videoWidth / 2, -cam.videoHeight / 2, cam.videoWidth, cam.videoHeight);
+  ctx.restore();
+}
+
+// object-fit: cover params for placing a uW×uH image into a W×H frame.
+function coverParams(uW, uH, W, H) {
+  const scale = Math.max(W / uW, H / uH);
+  return { scale, ox: (W - uW * scale) / 2, oy: (H - uH * scale) / 2 };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  COORDINATE MAPPING  (upright buffer px → display css px, w/ mirror)
 // ═══════════════════════════════════════════════════════════════════
 function mapper() {
-  const cam = document.getElementById('cam');
   const frame = document.getElementById('frame');
   const W = frame.clientWidth, H = frame.clientHeight;
-  const vW = cam.videoWidth || 1, vH = cam.videoHeight || 1;
-  const scale = Math.max(W / vW, H / vH);   // object-fit: cover
-  const ox = (W - vW * scale) / 2;
-  const oy = (H - vH * scale) / 2;
+  const { scale, ox, oy } = coverParams(detW, detH, W, H);
   return (px, py) => {
     let x = px * scale + ox;
     const y = py * scale + oy;
-    if (CONFIG.mirror) x = W - x;
+    if (CONFIG.mirror) x = W - x;   // mirror is a horizontal screen flip
     return { x, y };
   };
+}
+
+// Paint the upright feed onto the overlay, cover-fit + mirrored to match the
+// mapper exactly, so the lock-box sits on the face.
+function drawFeed(ctx, W, H) {
+  const cam = document.getElementById('cam');
+  if (!cam.videoWidth) return;
+  const { uW, uH } = uprightDims(cam.videoWidth, cam.videoHeight);
+  if (!feedBuf) { feedBuf = document.createElement('canvas'); feedBufCtx = feedBuf.getContext('2d'); }
+  if (feedBuf.width !== uW || feedBuf.height !== uH) { feedBuf.width = uW; feedBuf.height = uH; }
+  drawUpright(feedBufCtx, uW, uH, cam);
+
+  const { scale, ox, oy } = coverParams(uW, uH, W, H);
+  ctx.save();
+  if (CONFIG.mirror) { ctx.translate(W, 0); ctx.scale(-1, 1); }
+  ctx.drawImage(feedBuf, ox, oy, uW * scale, uH * scale);
+  ctx.restore();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -415,6 +481,9 @@ function renderLoop() {
   }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
+
+  // Upright camera feed first, HUD on top.
+  drawFeed(ctx, W, H);
 
   scanPhase   = (scanPhase + 0.0035) % 1;
   reticleSpin += 0.012;
