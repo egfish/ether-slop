@@ -61,12 +61,29 @@
   .w.read    { color: var(--read); }
   .w.current { color: var(--current); text-shadow: 0 0 24px var(--current-g); }
 
-  /* bracketed stage direction / ad-lib cue — shown, but never matched against speech */
+  /* (parentheses) — auto-skip cue: shown, never matched, follow waits for the next spoken word */
   .cue {
     color: rgba(255,112,67,0.72);
     font-style: italic; font-weight: 400;
     font-size: 0.78em; letter-spacing: 0;
   }
+
+  /* [brackets] — HARD PAUSE: follow stops here until the performer presses space */
+  .pause {
+    color: var(--current);
+    font-style: italic; font-weight: 400;
+    font-size: 0.8em; letter-spacing: 0.02em;
+    opacity: 0.78;
+    border-bottom: 1px dashed rgba(0,255,200,0.4);
+    padding-bottom: 1px;
+    transition: opacity 0.2s, text-shadow 0.2s;
+  }
+  .pause.waiting {
+    opacity: 1;
+    text-shadow: 0 0 22px var(--current-g);
+    animation: pausepulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pausepulse { 0%,100%{opacity:0.55;} 50%{opacity:1;} }
 
   /* speaker label like HOST: — shown as a name tag, not matched against speech */
   .label {
@@ -159,6 +176,16 @@
     opacity: 0; transition: opacity 0.3s; pointer-events: none;
   }
   #toast.show { opacity: 1; }
+
+  #pausebadge {
+    position: fixed; bottom: 64px; left: 50%; transform: translateX(-50%) translateY(8px);
+    z-index: 110; padding: 11px 22px; background: rgba(6,6,10,0.95);
+    border: 1px solid var(--current); color: var(--current);
+    font-size: 0.62rem; letter-spacing: 0.22em; text-transform: uppercase;
+    opacity: 0; transition: opacity 0.3s, transform 0.3s; pointer-events: none;
+    box-shadow: 0 0 28px rgba(0,255,200,0.18);
+  }
+  #pausebadge.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 </style>
 </head>
 <body>
@@ -176,9 +203,11 @@ Each blank line starts a new paragraph. The teleprompter scrolls so the line you
 
 Three ways to drive it. Voice mode listens through the mic and follows along, highlighting words as you say them and scrolling to keep pace. Auto mode rolls at a steady speed you can nudge up or down. Manual mode does nothing until you scroll, arrow, or tap.
 
-When the script calls for improvisation, wrap the direction in square brackets. [Ad-lib your answer about the weather here.] Voice-follow ignores the bracketed text entirely and picks you back up on the next written word — and if your riff runs long, press Enter or hit Next line to snap ahead.
+When the script calls for a beat, use square brackets for a hard pause. [Wait for the audience. Press space to continue.] The follow stops at the bracket and holds there — glowing — until you press the space bar, then picks up on the next written word.
 
-HOST: Speaker labels work the same way. Any word ending in a colon shows as a name tag but is never matched against speech, so the follow stays locked on the dialogue.
+For improvisation that you'll talk through, use parentheses instead. (Ad-lib your answer here.) The follow skips the parenthetical and simply waits, then reacquires the moment you speak the next written line — no key press needed.
+
+HOST: Speaker labels work too. Any word ending in a colon shows as a name tag but is never matched against speech, so the follow stays locked on the dialogue.
 
 GUEST: Exactly — you just read your line and it tracks normally.
 
@@ -203,6 +232,7 @@ You don't need admin rights on the machine — this is just a web page. Open it 
 <div id="fade-bot"></div>
 <div id="readingline"></div>
 <div id="toast"></div>
+<div id="pausebadge">Paused · press space to continue</div>
 
 <div id="bar">
   <div class="grp">
@@ -234,6 +264,7 @@ You don't need admin rights on the machine — this is just a web page. Open it 
   <div class="grp">
     <button class="ctl" id="mir-h">Flip H</button>
     <button class="ctl" id="mir-v">Flip V</button>
+    <button class="ctl on" id="loop">Loop ↻</button>
     <button class="ctl" id="reset">Top ⤒</button>
   </div>
 
@@ -252,10 +283,10 @@ You don't need admin rights on the machine — this is just a web page. Open it 
     <button class="ctl on" id="apply">Load script</button>
     <button class="ctl" id="cancel">Cancel</button>
     <span class="hint">
-      <b>Space</b> play/pause &nbsp;·&nbsp; <b>Enter</b> next line &nbsp;·&nbsp; <b>← →</b> speed &nbsp;·&nbsp; <b>↑ ↓</b> nudge scroll &nbsp;·&nbsp;
-      <b>+ −</b> font &nbsp;·&nbsp; <b>V</b> voice &nbsp;·&nbsp; <b>M</b> mirror &nbsp;·&nbsp;
+      <b>Space</b> play/pause · release pause &nbsp;·&nbsp; <b>Enter</b> next line &nbsp;·&nbsp; <b>← →</b> speed &nbsp;·&nbsp; <b>↑ ↓</b> nudge scroll &nbsp;·&nbsp;
+      <b>+ −</b> font &nbsp;·&nbsp; <b>V</b> voice &nbsp;·&nbsp; <b>L</b> loop &nbsp;·&nbsp; <b>M</b> mirror &nbsp;·&nbsp;
       <b>R</b> reset &nbsp;·&nbsp; <b>E</b> edit &nbsp;·&nbsp; <b>H</b> hide bar &nbsp;·&nbsp; <b>F</b> fullscreen
-      <br>Wrap stage directions in <b>[square brackets]</b> — they show as cues but voice-follow skips them. A word ending in <b>:</b> shows as a speaker label and is skipped too.
+      <br><b>[square brackets]</b> = hard pause (press space to continue) &nbsp;·&nbsp; <b>(parentheses)</b> = auto-skip, follow waits for the next spoken word &nbsp;·&nbsp; a word ending in <b>:</b> is a speaker label, also skipped.
     </span>
   </div>
 </div>
@@ -273,11 +304,15 @@ let mode       = 'manual';         // manual | auto | voice
 let playing    = false;            // auto-scroll running
 let speed      = CONFIG.autoSpeed; // px/frame
 let fontPx     = 42;
-let tokens     = [];               // {raw, norm, el}
+let tokens     = [];               // {raw, norm, el, gateBefore, gateEl}
 let pointer    = 0;                // current word index (voice mode)
 let targetY    = 0;                // smoothed scroll target
 let recog      = null;
 let listening  = false;
+let paused     = false;            // halted at a [bracket] hard pause, waiting for space
+let pausedGate = -1;               // token index of the word after the pause
+let tailPause  = null;             // pause element if a [bracket] sits after the last word
+let loop       = true;             // return to top on reaching the end
 const norm = w => w.toLowerCase().replace(/[^a-z0-9']/g, '');
 
 // ════════════════════════════════════════════════════════════
@@ -287,6 +322,12 @@ function loadScript(text) {
   scriptE.innerHTML = '';
   tokens = [];
   pointer = 0;
+  paused = false;
+  pausedGate = -1;
+  tailPause = null;
+  hidePauseBadge();
+
+  let pendingGate = null;          // a [bracket] pause element awaiting its following word
 
   const paras = text.replace(/\r/g, '').split(/\n{2,}/);
   paras.forEach(para => {
@@ -294,15 +335,25 @@ function loadScript(text) {
     const p = document.createElement('p');
     p.style.margin = '0 0 0.9em';
 
-    // split paragraph into [bracketed cues] and spoken segments
-    para.split(/(\[[^\]]*\])/).forEach(seg => {
+    // split paragraph into [hard-pause brackets], (auto-skip parens), and spoken segments
+    para.split(/(\[[^\]]*\]|\([^)]*\))/).forEach(seg => {
       if (!seg) return;
+
       if (/^\[[^\]]*\]$/.test(seg)) {
-        // direction / ad-lib cue: visible to the performer, invisible to the matcher
+        // [bracket] = HARD PAUSE: visible cue, follow halts here until space is pressed
+        const cue = document.createElement('span');
+        cue.className = 'pause';
+        cue.textContent = seg + ' ';
+        p.appendChild(cue);
+        pendingGate = cue;         // the next spoken word becomes the gate boundary
+
+      } else if (/^\([^)]*\)$/.test(seg)) {
+        // (paren) = auto-skip cue: visible, not matched, follow waits for the next word
         const cue = document.createElement('span');
         cue.className = 'cue';
         cue.textContent = seg + ' ';
         p.appendChild(cue);
+
       } else {
         seg.split(/\s+/).filter(Boolean).forEach(raw => {
           const span = document.createElement('span');
@@ -313,7 +364,11 @@ function loadScript(text) {
           } else {
             span.className = 'w';
             const n = norm(raw);
-            if (n) tokens.push({ raw, norm: n, el: span });   // only spoken words are matchable
+            if (n) {
+              const tok = { raw, norm: n, el: span, gateBefore: false, gateEl: null };
+              if (pendingGate) { tok.gateBefore = true; tok.gateEl = pendingGate; pendingGate = null; }
+              tokens.push(tok);   // only spoken words are matchable
+            }
           }
           p.appendChild(span);
         });
@@ -322,6 +377,9 @@ function loadScript(text) {
 
     scriptE.appendChild(p);
   });
+
+  // a [bracket] with no spoken word after it pauses at the very end
+  if (pendingGate) tailPause = pendingGate;
 
   viewer.scrollTop = 0;
   targetY = 0;
@@ -341,6 +399,14 @@ function frame() {
   }
 
   const max = viewer.scrollHeight - viewer.clientHeight;
+
+  // reached the end of an auto roll → loop back to the top (hard jump, no rewind-scroll)
+  if (mode === 'auto' && playing && loop && max > 0 && targetY >= max) {
+    targetY = 0;
+    viewer.scrollTop = 0;
+    return;
+  }
+
   targetY = Math.max(0, Math.min(targetY, max));
 
   // ease current scroll toward target (skip easing in pure manual so wheel feels native)
@@ -386,14 +452,25 @@ function buildRecognition() {
   return r;
 }
 
+// Index of the next [bracket] gate strictly after position p, or -1.
+function nextGateAfter(p) {
+  for (let i = p + 1; i < tokens.length; i++) if (tokens[i].gateBefore) return i;
+  return -1;
+}
+
 // Fuzzy forward-matcher: looks for recently-spoken words inside a
 // forward window of the script and advances the pointer to the best
 // match. Only ever moves forward, so a misheard word or repeat won't
 // throw it backward. If nothing matches, it holds position.
 function advanceTo(spoken) {
+  if (paused) return;                  // halted at a hard pause — ignore speech until space
+  if (!tokens.length) return;
+
   const recent = spoken.slice(-5);
   const WINDOW = 28;
-  const end = Math.min(pointer + WINDOW, tokens.length);
+  const gate   = nextGateAfter(pointer);
+  const limit  = gate >= 0 ? gate : tokens.length;   // never advance across a [bracket]
+  const end    = Math.min(pointer + WINDOW, limit);
   let best = -1, bestScore = 0;
 
   for (let p = pointer; p < end; p++) {
@@ -414,6 +491,15 @@ function advanceTo(spoken) {
     updateHighlight();
     scrollToPointer();
   }
+
+  // engage the hard pause once the last word before a [bracket] has been read
+  if (gate >= 0 && pointer >= gate - 1) { engagePause(gate); return; }
+
+  // reached the final word
+  if (pointer >= tokens.length - 1) {
+    if (tailPause) { engageEndPause(); return; }
+    if (loop) { pointer = 0; updateHighlight(); targetY = 0; }   // return to the top
+  }
 }
 
 function updateHighlight() {
@@ -433,10 +519,58 @@ function scrollToPointer() {
   targetY = el.offsetTop + el.offsetHeight / 2 - lineY();
 }
 
+// ── Hard-pause control ([bracket] gates) ──────────────────────
+function showPauseBadge() { document.getElementById('pausebadge').classList.add('show'); }
+function hidePauseBadge() { document.getElementById('pausebadge').classList.remove('show'); }
+
+// Halt the follow at a [bracket] sitting before token index g.
+function engagePause(g) {
+  paused = true;
+  pausedGate = g;
+  const cue = tokens[g] && tokens[g].gateEl;
+  if (cue) {
+    cue.classList.add('waiting');
+    targetY = cue.offsetTop + cue.offsetHeight / 2 - lineY();
+  }
+  showPauseBadge();
+}
+
+// Halt at a [bracket] that sits after the final word.
+function engageEndPause() {
+  paused = true;
+  pausedGate = tokens.length;          // sentinel: past the end
+  if (tailPause) {
+    tailPause.classList.add('waiting');
+    targetY = tailPause.offsetTop + tailPause.offsetHeight / 2 - lineY();
+  }
+  showPauseBadge();
+}
+
+// Performer presses space → continue past the pause. Returns true if a pause was active.
+function releaseGate() {
+  if (!paused) return false;
+  const cue = pausedGate < tokens.length ? (tokens[pausedGate] && tokens[pausedGate].gateEl) : tailPause;
+  if (cue) cue.classList.remove('waiting');
+  hidePauseBadge();
+  paused = false;
+
+  if (pausedGate >= tokens.length) {
+    // end-of-script pause: loop to top if looping, else just clear and hold
+    if (loop) { pointer = 0; updateHighlight(); targetY = 0; viewer.scrollTop = 0; }
+  } else if (pausedGate >= 0) {
+    pointer = pausedGate;              // resume on the first word after the bracket
+    updateHighlight();
+    scrollToPointer();
+  }
+  pausedGate = -1;
+  return true;
+}
+
 // Manual override: jump the pointer to the first spoken word of the next
 // paragraph. The reacquire is automatic when the performer resumes reading,
 // but if an ad-lib runs long (or the matcher stalls), this snaps ahead.
 function resumeNext() {
+  if (paused) { releaseGate(); return; }   // a pause is the thing to clear first
   if (!tokens.length) return;
   const idx = Math.min(pointer, tokens.length - 1);
   const curP = tokens[idx].el.parentElement;
@@ -473,6 +607,11 @@ function setMode(m) {
   if (m === mode && m !== 'voice') return;
   // tear down old
   if (mode === 'voice') stopVoice();
+  if (paused) {                         // leaving a pause behind — clear its state cleanly
+    const cue = pausedGate < tokens.length ? (tokens[pausedGate] && tokens[pausedGate].gateEl) : tailPause;
+    if (cue) cue.classList.remove('waiting');
+    paused = false; pausedGate = -1; hidePauseBadge();
+  }
   playing = false;
   setPlayLabel();
 
@@ -544,6 +683,7 @@ document.getElementById('fs-down').onclick    = () => setFont(fontPx - 4);
 document.getElementById('mir-h').onclick = (e) => { flip.classList.toggle('mirror-h'); e.target.classList.toggle('on'); };
 document.getElementById('mir-v').onclick = (e) => { flip.classList.toggle('mirror-v'); e.target.classList.toggle('on'); };
 document.getElementById('reset').onclick = () => { targetY = 0; viewer.scrollTop = 0; pointer = 0; updateHighlight(); };
+document.getElementById('loop').onclick = (e) => { loop = !loop; e.target.classList.toggle('on', loop); toast(loop ? 'Loop on' : 'Loop off'); };
 document.getElementById('full').onclick  = () => {
   if (!document.fullscreenElement) document.documentElement.requestFullscreen?.();
   else document.exitFullscreen?.();
@@ -590,7 +730,7 @@ document.addEventListener('keydown', (e) => {
     return;                       // let typing through in the textarea
   }
   switch (e.key) {
-    case ' ':        e.preventDefault(); togglePlay(); break;
+    case ' ':        e.preventDefault(); if (releaseGate()) break; if (mode !== 'voice') togglePlay(); break;
     case 'Enter':    e.preventDefault(); resumeNext(); break;
     case 'ArrowRight': setSpeed(speed + 0.1); break;
     case 'ArrowLeft':  setSpeed(speed - 0.1); break;
@@ -599,6 +739,7 @@ document.addEventListener('keydown', (e) => {
     case '+': case '=': setFont(fontPx + 4); break;
     case '-': case '_': setFont(fontPx - 4); break;
     case 'v': case 'V': setMode(mode === 'voice' ? 'manual' : 'voice'); break;
+    case 'l': case 'L': document.getElementById('loop').click(); break;
     case 'm': case 'M': flip.classList.toggle('mirror-h'); document.getElementById('mir-h').classList.toggle('on'); break;
     case 'r': case 'R': targetY = 0; viewer.scrollTop = 0; pointer = 0; updateHighlight(); break;
     case 'e': case 'E': openEdit(); break;
