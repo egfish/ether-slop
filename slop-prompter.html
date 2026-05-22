@@ -37,15 +37,6 @@
   }
   #viewer::-webkit-scrollbar { display: none; }
 
-  /* mirror transforms applied to inner so scroll math stays sane */
-  #flip {
-    transform-origin: center center;
-    transition: transform 0.25s ease;
-  }
-  #flip.mirror-h { transform: scaleX(-1); }
-  #flip.mirror-v { transform: scaleY(-1); }
-  #flip.mirror-h.mirror-v { transform: scale(-1,-1); }
-
   #script {
     max-width: 1600px;
     margin: 0 auto;
@@ -150,6 +141,58 @@
   .spacer { flex: 1; }
   .modeval { color: var(--current); min-width: 3.2em; text-align:center; display:inline-block; }
 
+  /* ─── AD LIB BUTTON (upper right) ────────────────────────── */
+  #adlib-wrap {
+    position: fixed; top: 24px; right: 28px; z-index: 120;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+    text-align: right;
+    transition: opacity 0.3s;
+  }
+  #adlib-wrap.hidden-wrap { opacity: 0; pointer-events: none; }
+  #adlib-btn {
+    font-family: var(--font);
+    font-size: 2.0rem; font-weight: 700;
+    letter-spacing: 0.18em; text-transform: uppercase;
+    background: rgba(6,6,10,0.55); color: var(--mic);
+    border: 2px solid var(--mic);
+    padding: 18px 38px; cursor: pointer;
+    transition: background .15s, color .15s, box-shadow .15s;
+    -webkit-tap-highlight-color: transparent; user-select: none;
+    box-shadow: 0 0 22px var(--mic-g);
+  }
+  #adlib-btn:hover { background: var(--mic-g); }
+  #adlib-btn.active {
+    background: var(--mic); color: var(--bg);
+    box-shadow: 0 0 40px rgba(255,112,67,0.5);
+    animation: adlibpulse 1.4s ease-in-out infinite;
+  }
+  @keyframes adlibpulse { 0%,100%{box-shadow:0 0 30px rgba(255,112,67,0.4);} 50%{box-shadow:0 0 56px rgba(255,112,67,0.7);} }
+  #adlib-instr {
+    font-size: 1.0rem; letter-spacing: 0.12em; text-transform: uppercase;
+    color: #ffffff; max-width: 360px; line-height: 1.5; font-weight: 700;
+  }
+
+  /* ─── AD LIB OVERLAY (darkens the passed/upper script region) ─ */
+  #adlib-overlay {
+    position: fixed; left: 0; right: 0; top: 0;
+    height: 42%;                       /* covers passed script down to ~reading line */
+    z-index: 60; pointer-events: none;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; padding: 0 6vw;
+    background: linear-gradient(180deg, rgba(6,6,10,0.97) 0%, rgba(6,6,10,0.95) 70%, rgba(6,6,10,0) 100%);
+    opacity: 0; transition: opacity 0.35s;
+  }
+  #adlib-overlay.show { opacity: 1; }
+  #adlib-overlay .big {
+    font-size: clamp(2.4rem, 8vw, 6rem); font-weight: 700;
+    letter-spacing: 0.16em; text-transform: uppercase; color: var(--mic);
+    text-shadow: 0 0 50px rgba(255,112,67,0.4); text-align: center;
+  }
+  #adlib-overlay .sub {
+    font-size: clamp(1.05rem, 2.4vw, 1.5rem); letter-spacing: 0.18em;
+    text-transform: uppercase; color: #ffffff; text-align: center; font-weight: 700;
+  }
+
   /* ─── EDIT PANEL ─────────────────────────────────────────── */
   #edit {
     position: fixed; inset: 0; z-index: 200; background: var(--bg);
@@ -179,9 +222,9 @@
 
   #pausebadge {
     position: fixed; bottom: 64px; left: 50%; transform: translateX(-50%) translateY(8px);
-    z-index: 110; padding: 11px 22px; background: rgba(6,6,10,0.95);
+    z-index: 110; padding: 22px 44px; background: rgba(6,6,10,0.95);
     border: 1px solid var(--current); color: var(--current);
-    font-size: 0.62rem; letter-spacing: 0.22em; text-transform: uppercase;
+    font-size: 1.24rem; letter-spacing: 0.22em; text-transform: uppercase;
     opacity: 0; transition: opacity 0.3s, transform 0.3s; pointer-events: none;
     box-shadow: 0 0 28px rgba(0,255,200,0.18);
   }
@@ -201,11 +244,13 @@
 
 Each blank line starts a new paragraph. The teleprompter scrolls so the line you're reading sits at the marker near the middle of the screen.
 
-Three ways to drive it. Voice mode listens through the mic and follows along, highlighting words as you say them and scrolling to keep pace. Auto mode rolls at a steady speed you can nudge up or down. Manual mode does nothing until you scroll, arrow, or tap.
+Two ways to drive it. Voice mode listens through the mic and follows along, highlighting words as you say them and scrolling to keep pace. Manual mode does nothing until you scroll, arrow, or tap.
 
-When the script calls for a beat, use square brackets for a hard pause. [Wait for the audience. Press space to continue.] The follow stops at the bracket and holds there — glowing — until you press the space bar, then picks up on the next written word.
+At any point you can press the space bar — or tap AD LIB in the corner — to pause the script. The upper, already-read part of the screen darkens, AD LIB NOW appears, and the follow holds. Press space again to continue from where you left off.
 
-For improvisation that you'll talk through, use parentheses instead. (Ad-lib your answer here.) The follow skips the parenthetical and simply waits, then reacquires the moment you speak the next written line — no key press needed.
+When the script calls for an ad-lib at a set spot, use square brackets. [Ad-lib your answer here.] AD LIB mode triggers automatically at the bracket, so everyone watching sees it clearly. Press space to continue onto the next written word.
+
+For a quieter skip that needs no key press, use parentheses instead. (aside, under your breath) The follow ignores the parenthetical and simply reacquires the moment you speak the next written line.
 
 HOST: Speaker labels work too. Any word ending in a colon shows as a name tag but is never matched against speech, so the follow stays locked on the dialogue.
 
@@ -216,16 +261,13 @@ You don't need admin rights on the machine — this is just a web page. Open it 
     // Reading line position, % from top of screen
     readingLine: 40,
 
-    // Auto-scroll starting speed (pixels per frame at 60fps)
-    autoSpeed: 0.9,
-
     // Speech recognition language
     lang: 'en-US',
   };
 </script>
 
 <div id="viewer">
-  <div id="flip"><div id="script"></div></div>
+  <div id="script"></div>
 </div>
 
 <div id="fade-top"></div>
@@ -234,24 +276,27 @@ You don't need admin rights on the machine — this is just a web page. Open it 
 <div id="toast"></div>
 <div id="pausebadge">Paused · press space to continue</div>
 
+<!-- AD LIB control + instruction, upper right -->
+<div id="adlib-wrap">
+  <button id="adlib-btn">Ad Lib</button>
+  <div id="adlib-instr">Press space bar to pause script</div>
+</div>
+
+<!-- AD LIB overlay — darkens the passed (upper) script while paused -->
+<div id="adlib-overlay">
+  <div class="big">Ad Lib Now</div>
+  <div class="sub">Press space bar to continue script</div>
+</div>
+
 <div id="bar">
   <div class="grp">
     <span class="lbl">Mode</span>
     <button class="ctl" id="m-manual">Manual</button>
-    <button class="ctl" id="m-auto">Auto</button>
     <button class="ctl" id="m-voice">Voice</button>
   </div>
 
   <div class="grp">
     <button class="ctl" id="resume" title="Jump to the next line — use to resume after an ad-lib">Next line ▸</button>
-  </div>
-
-  <div class="grp" id="auto-ctls">
-    <button class="ctl" id="play">Play ▶</button>
-    <span class="lbl">Speed</span>
-    <button class="ctl" id="sp-down">−</button>
-    <span class="modeval" id="sp-val">0.9</span>
-    <button class="ctl" id="sp-up">+</button>
   </div>
 
   <div class="grp">
@@ -262,8 +307,6 @@ You don't need admin rights on the machine — this is just a web page. Open it 
   </div>
 
   <div class="grp">
-    <button class="ctl" id="mir-h">Flip H</button>
-    <button class="ctl" id="mir-v">Flip V</button>
     <button class="ctl on" id="loop">Loop ↻</button>
     <button class="ctl" id="reset">Top ⤒</button>
   </div>
@@ -283,10 +326,10 @@ You don't need admin rights on the machine — this is just a web page. Open it 
     <button class="ctl on" id="apply">Load script</button>
     <button class="ctl" id="cancel">Cancel</button>
     <span class="hint">
-      <b>Space</b> play/pause · release pause &nbsp;·&nbsp; <b>Enter</b> next line &nbsp;·&nbsp; <b>← →</b> speed &nbsp;·&nbsp; <b>↑ ↓</b> nudge scroll &nbsp;·&nbsp;
-      <b>+ −</b> font &nbsp;·&nbsp; <b>V</b> voice &nbsp;·&nbsp; <b>L</b> loop &nbsp;·&nbsp; <b>M</b> mirror &nbsp;·&nbsp;
+      <b>Space</b> AD LIB pause / continue &nbsp;·&nbsp; <b>Enter</b> next line &nbsp;·&nbsp; <b>↑ ↓</b> nudge scroll &nbsp;·&nbsp;
+      <b>+ −</b> font &nbsp;·&nbsp; <b>V</b> voice &nbsp;·&nbsp; <b>L</b> loop &nbsp;·&nbsp;
       <b>R</b> reset &nbsp;·&nbsp; <b>E</b> edit &nbsp;·&nbsp; <b>H</b> hide bar &nbsp;·&nbsp; <b>F</b> fullscreen
-      <br><b>[square brackets]</b> = hard pause (press space to continue) &nbsp;·&nbsp; <b>(parentheses)</b> = auto-skip, follow waits for the next spoken word &nbsp;·&nbsp; a word ending in <b>:</b> is a speaker label, also skipped.
+      <br><b>[square brackets]</b> = AD LIB pause, auto-triggered (press space to continue) &nbsp;·&nbsp; <b>(parentheses)</b> = quiet skip, follow waits for the next spoken word &nbsp;·&nbsp; a word ending in <b>:</b> is a speaker label, also skipped.
     </span>
   </div>
 </div>
@@ -297,20 +340,18 @@ You don't need admin rights on the machine — this is just a web page. Open it 
 // ════════════════════════════════════════════════════════════
 const viewer  = document.getElementById('viewer');
 const scriptE = document.getElementById('script');
-const flip    = document.getElementById('flip');
 const rline   = document.getElementById('readingline');
 
-let mode       = 'manual';         // manual | auto | voice
-let playing    = false;            // auto-scroll running
-let speed      = CONFIG.autoSpeed; // px/frame
+let mode       = 'voice';          // manual | voice
 let fontPx     = 42;
 let tokens     = [];               // {raw, norm, el, gateBefore, gateEl}
 let pointer    = 0;                // current word index (voice mode)
 let targetY    = 0;                // smoothed scroll target
 let recog      = null;
 let listening  = false;
-let paused     = false;            // halted at a [bracket] hard pause, waiting for space
-let pausedGate = -1;               // token index of the word after the pause
+let paused     = false;            // AD LIB pause active, waiting for space
+let pausedResume = -1;             // token index to resume at when released
+let pausedCue  = null;             // bracket/tail cue element to un-glow (null for manual ad-lib)
 let tailPause  = null;             // pause element if a [bracket] sits after the last word
 let loop       = true;             // return to top on reaching the end
 const norm = w => w.toLowerCase().replace(/[^a-z0-9']/g, '');
@@ -323,9 +364,10 @@ function loadScript(text) {
   tokens = [];
   pointer = 0;
   paused = false;
-  pausedGate = -1;
+  pausedResume = -1;
+  pausedCue = null;
   tailPause = null;
-  hidePauseBadge();
+  hideAdLib();
 
   let pendingGate = null;          // a [bracket] pause element awaiting its following word
 
@@ -387,26 +429,14 @@ function loadScript(text) {
 }
 
 // ════════════════════════════════════════════════════════════
-//  RENDER LOOP — eases scroll, drives auto mode
+//  RENDER LOOP — eases scroll toward target
 // ════════════════════════════════════════════════════════════
 function lineY() { return window.innerHeight * (CONFIG.readingLine / 100); }
 
 function frame() {
   requestAnimationFrame(frame);
 
-  if (mode === 'auto' && playing) {
-    targetY += speed;
-  }
-
   const max = viewer.scrollHeight - viewer.clientHeight;
-
-  // reached the end of an auto roll → loop back to the top (hard jump, no rewind-scroll)
-  if (mode === 'auto' && playing && loop && max > 0 && targetY >= max) {
-    targetY = 0;
-    viewer.scrollTop = 0;
-    return;
-  }
-
   targetY = Math.max(0, Math.min(targetY, max));
 
   // ease current scroll toward target (skip easing in pure manual so wheel feels native)
@@ -492,12 +522,12 @@ function advanceTo(spoken) {
     scrollToPointer();
   }
 
-  // engage the hard pause once the last word before a [bracket] has been read
-  if (gate >= 0 && pointer >= gate - 1) { engagePause(gate); return; }
+  // engage the AD LIB pause once the last word before a [bracket] has been read
+  if (gate >= 0 && pointer >= gate - 1) { engageAdLib(gate, tokens[gate].gateEl); return; }
 
   // reached the final word
   if (pointer >= tokens.length - 1) {
-    if (tailPause) { engageEndPause(); return; }
+    if (tailPause) { engageAdLib(tokens.length, tailPause); return; }
     if (loop) { pointer = 0; updateHighlight(); targetY = 0; }   // return to the top
   }
 }
@@ -519,58 +549,70 @@ function scrollToPointer() {
   targetY = el.offsetTop + el.offsetHeight / 2 - lineY();
 }
 
-// ── Hard-pause control ([bracket] gates) ──────────────────────
-function showPauseBadge() { document.getElementById('pausebadge').classList.add('show'); }
-function hidePauseBadge() { document.getElementById('pausebadge').classList.remove('show'); }
-
-// Halt the follow at a [bracket] sitting before token index g.
-function engagePause(g) {
-  paused = true;
-  pausedGate = g;
-  const cue = tokens[g] && tokens[g].gateEl;
-  if (cue) {
-    cue.classList.add('waiting');
-    targetY = cue.offsetTop + cue.offsetHeight / 2 - lineY();
-  }
-  showPauseBadge();
+// ── AD LIB pause control ──────────────────────────────────────
+const adlibBtn     = document.getElementById('adlib-btn');
+const adlibOverlay = document.getElementById('adlib-overlay');
+function showAdLib() {
+  adlibOverlay.classList.add('show');
+  adlibBtn.classList.add('active');
+  document.getElementById('adlib-wrap').classList.add('hidden-wrap');
+  document.getElementById('pausebadge').classList.add('show');
+}
+function hideAdLib() {
+  adlibOverlay.classList.remove('show');
+  adlibBtn.classList.remove('active');
+  document.getElementById('adlib-wrap').classList.remove('hidden-wrap');
+  document.getElementById('pausebadge').classList.remove('show');
 }
 
-// Halt at a [bracket] that sits after the final word.
-function engageEndPause() {
+// Engage an AD LIB pause. resumeIdx = token to resume at when released
+// (current pointer for a manual ad-lib; the word after a [bracket]; or
+// tokens.length for an end-of-script pause). cueEl = bracket/tail element
+// to glow, or null for a manual ad-lib.
+function engageAdLib(resumeIdx, cueEl) {
+  if (paused) return;
   paused = true;
-  pausedGate = tokens.length;          // sentinel: past the end
-  if (tailPause) {
-    tailPause.classList.add('waiting');
-    targetY = tailPause.offsetTop + tailPause.offsetHeight / 2 - lineY();
+  pausedResume = (resumeIdx === undefined) ? pointer : resumeIdx;
+  pausedCue = cueEl || null;
+  if (pausedCue) {
+    pausedCue.classList.add('waiting');
+    targetY = pausedCue.offsetTop + pausedCue.offsetHeight / 2 - lineY();
   }
-  showPauseBadge();
+  showAdLib();
 }
 
-// Performer presses space → continue past the pause. Returns true if a pause was active.
-function releaseGate() {
+// Press space → continue. Returns true if a pause was active.
+function releaseAdLib() {
   if (!paused) return false;
-  const cue = pausedGate < tokens.length ? (tokens[pausedGate] && tokens[pausedGate].gateEl) : tailPause;
-  if (cue) cue.classList.remove('waiting');
-  hidePauseBadge();
+  if (pausedCue) pausedCue.classList.remove('waiting');
+  hideAdLib();
   paused = false;
 
-  if (pausedGate >= tokens.length) {
-    // end-of-script pause: loop to top if looping, else just clear and hold
-    if (loop) { pointer = 0; updateHighlight(); targetY = 0; viewer.scrollTop = 0; }
-  } else if (pausedGate >= 0) {
-    pointer = pausedGate;              // resume on the first word after the bracket
-    updateHighlight();
-    scrollToPointer();
+  if (mode === 'voice') {
+    if (pausedResume >= tokens.length) {
+      if (loop) { pointer = 0; updateHighlight(); targetY = 0; viewer.scrollTop = 0; }
+    } else if (pausedResume >= 0) {
+      pointer = Math.max(pointer, pausedResume);   // resume on the word after the bracket
+      updateHighlight();
+      scrollToPointer();
+    }
   }
-  pausedGate = -1;
+  pausedResume = -1;
+  pausedCue = null;
   return true;
+}
+
+// Toggle AD LIB from the button / spacebar.
+function toggleAdLib() {
+  if (paused) releaseAdLib();
+  else engageAdLib(pointer, null);   // manual ad-lib: hold here, resume here
 }
 
 // Manual override: jump the pointer to the first spoken word of the next
 // paragraph. The reacquire is automatic when the performer resumes reading,
 // but if an ad-lib runs long (or the matcher stalls), this snaps ahead.
 function resumeNext() {
-  if (paused) { releaseGate(); return; }   // a pause is the thing to clear first
+  if (paused) { releaseAdLib(); return; }   // a pause is the thing to clear first
   if (!tokens.length) return;
   const idx = Math.min(pointer, tokens.length - 1);
   const curP = tokens[idx].el.parentElement;
@@ -607,19 +649,15 @@ function setMode(m) {
   if (m === mode && m !== 'voice') return;
   // tear down old
   if (mode === 'voice') stopVoice();
-  if (paused) {                         // leaving a pause behind — clear its state cleanly
-    const cue = pausedGate < tokens.length ? (tokens[pausedGate] && tokens[pausedGate].gateEl) : tailPause;
-    if (cue) cue.classList.remove('waiting');
-    paused = false; pausedGate = -1; hidePauseBadge();
+  if (paused) {                         // leaving a pause behind — clear it cleanly
+    if (pausedCue) pausedCue.classList.remove('waiting');
+    paused = false; pausedResume = -1; pausedCue = null; hideAdLib();
   }
-  playing = false;
-  setPlayLabel();
 
   mode = m;
-  ['manual', 'auto', 'voice'].forEach(x =>
+  ['manual', 'voice'].forEach(x =>
     document.getElementById('m-' + x).classList.toggle('on', x === m));
 
-  document.getElementById('auto-ctls').style.opacity = (m === 'auto') ? '1' : '0.35';
   rline.classList.toggle('show', m !== 'manual');
 
   updateHighlight();
@@ -647,19 +685,6 @@ function syncPointerToScroll() {
 // ════════════════════════════════════════════════════════════
 //  CONTROLS
 // ════════════════════════════════════════════════════════════
-function setPlayLabel() {
-  document.getElementById('play').textContent = playing ? 'Pause ⏸' : 'Play ▶';
-  document.getElementById('play').classList.toggle('on', playing);
-}
-function togglePlay() {
-  if (mode !== 'auto') setMode('auto');
-  playing = !playing;
-  setPlayLabel();
-}
-function setSpeed(v) {
-  speed = Math.max(0.1, Math.min(8, Math.round(v * 10) / 10));
-  document.getElementById('sp-val').textContent = speed.toFixed(1);
-}
 function setFont(px) {
   fontPx = Math.max(20, Math.min(110, px));
   scriptE.style.fontSize = fontPx + 'px';
@@ -672,16 +697,11 @@ function nudge(px) {
 }
 
 document.getElementById('m-manual').onclick = () => setMode('manual');
-document.getElementById('m-auto').onclick   = () => setMode('auto');
 document.getElementById('m-voice').onclick  = () => setMode('voice');
 document.getElementById('resume').onclick   = resumeNext;
-document.getElementById('play').onclick     = togglePlay;
-document.getElementById('sp-up').onclick     = () => setSpeed(speed + 0.1);
-document.getElementById('sp-down').onclick   = () => setSpeed(speed - 0.1);
+document.getElementById('adlib-btn').onclick = toggleAdLib;
 document.getElementById('fs-up').onclick      = () => setFont(fontPx + 4);
 document.getElementById('fs-down').onclick    = () => setFont(fontPx - 4);
-document.getElementById('mir-h').onclick = (e) => { flip.classList.toggle('mirror-h'); e.target.classList.toggle('on'); };
-document.getElementById('mir-v').onclick = (e) => { flip.classList.toggle('mirror-v'); e.target.classList.toggle('on'); };
 document.getElementById('reset').onclick = () => { targetY = 0; viewer.scrollTop = 0; pointer = 0; updateHighlight(); };
 document.getElementById('loop').onclick = (e) => { loop = !loop; e.target.classList.toggle('on', loop); toast(loop ? 'Loop on' : 'Loop off'); };
 document.getElementById('full').onclick  = () => {
@@ -730,17 +750,14 @@ document.addEventListener('keydown', (e) => {
     return;                       // let typing through in the textarea
   }
   switch (e.key) {
-    case ' ':        e.preventDefault(); if (releaseGate()) break; if (mode !== 'voice') togglePlay(); break;
+    case ' ':        e.preventDefault(); toggleAdLib(); break;
     case 'Enter':    e.preventDefault(); resumeNext(); break;
-    case 'ArrowRight': setSpeed(speed + 0.1); break;
-    case 'ArrowLeft':  setSpeed(speed - 0.1); break;
     case 'ArrowDown':  e.preventDefault(); nudge(60); break;
     case 'ArrowUp':    e.preventDefault(); nudge(-60); break;
     case '+': case '=': setFont(fontPx + 4); break;
     case '-': case '_': setFont(fontPx - 4); break;
     case 'v': case 'V': setMode(mode === 'voice' ? 'manual' : 'voice'); break;
     case 'l': case 'L': document.getElementById('loop').click(); break;
-    case 'm': case 'M': flip.classList.toggle('mirror-h'); document.getElementById('mir-h').classList.toggle('on'); break;
     case 'r': case 'R': targetY = 0; viewer.scrollTop = 0; pointer = 0; updateHighlight(); break;
     case 'e': case 'E': openEdit(); break;
     case 'h': case 'H': toggleBar(); break;
@@ -756,9 +773,8 @@ viewer.addEventListener('scroll', () => { if (mode === 'manual') targetY = viewe
 // ════════════════════════════════════════════════════════════
 rline.style.top = CONFIG.readingLine + '%';
 setFont(fontPx);
-setSpeed(speed);
 loadScript(_rawText);
-setMode('manual');
+setMode('manual');         // start in manual; performer taps Voice to begin the follow
 if (!SR) toast('Voice unavailable in this browser');
 </script>
 </body>
