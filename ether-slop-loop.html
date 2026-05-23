@@ -163,7 +163,7 @@ const CONFIG = {
 
   muteButton: true,   // show a small, subtle corner mute/unmute toggle
 
-  shuffle: false,     // randomize order on load
+  shuffle: true,      // randomize order on load
 
   swipeThreshold: 60,   // px of drag to trigger an advance
   flickVelocity: 0.45,  // px/ms — a quick flick advances even if short
@@ -415,7 +415,8 @@ function showGate(mode) {
         f.type.startsWith('video/') || /\.(mp4|m4v|mov|webm)$/i.test(f.name));
       if (!files.length) return;
       files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-      order = files.map(f => URL.createObjectURL(f));
+      const urls = files.map(f => URL.createObjectURL(f));
+      order = CONFIG.shuffle ? shuffle(urls) : urls;
       N = order.length;
       soundOn = CONFIG.sound;          // the file selection counts as the gesture
       dismissGate();
